@@ -29,21 +29,25 @@ from PySide6.QtWidgets import (
 )
 from ultralytics import YOLO
 
+from camera_calibration import CameraCalibration, load_camera_calibration
 from fretboard_mapping import (
     DetectedLine,
     FretboardTracker,
     NoteMarker,
+    NoteMarkerTracker,
     SelectedLineTracker,
     StableFretboardGrid,
     build_center_test_note_markers,
     build_fretboard_grid,
     build_note_markers,
     count_detected_classes,
+    infer_selected_reference_fret_index,
 )
 from hand_tracking import Fingertip, MediaPipeHandTracker
 
 
 DEFAULT_MODEL_PATH = Path(__file__).with_name("best06.pt")
+DEFAULT_CALIBRATION_PATH = Path(__file__).with_name("camera_calibration.npz")
 NOTE_CHOICES = ["없음", "도", "레", "미", "파", "솔", "라", "시", "높은 도"]
 POINT_THRESHOLD = 0.15
 SELECTION_MAX_DISTANCE = 30.0
@@ -58,6 +62,9 @@ CLASS_COLORS = {
 NOTE_MARKER_COLOR = (0, 218, 255)
 NOTE_MARKER_MATCH_COLOR = (80, 255, 120)
 FINGERTIP_COLOR = (255, 180, 80)
+OPEN_NOTE_MARKER_RADIUS = 7
+OPEN_NOTE_MARKER_THICKNESS = 2
+FRETTED_NOTE_MARKER_RADIUS = 6
 
 
 @dataclass
@@ -103,6 +110,14 @@ def resolve_model_path(model_path: str | None) -> Path:
     if model_path:
         return Path(model_path).expanduser().resolve()
     return DEFAULT_MODEL_PATH.resolve()
+
+
+def resolve_camera_calibration_path(calibration_path: str | None) -> Path | None:
+    if calibration_path:
+        return Path(calibration_path).expanduser().resolve()
+    if DEFAULT_CALIBRATION_PATH.exists():
+        return DEFAULT_CALIBRATION_PATH.resolve()
+    return None
 
 
 def load_yolo_model(model_path: Path) -> YOLO:
@@ -296,9 +311,9 @@ def draw_note_markers(
         center = tuple(int(round(value)) for value in marker.point_xy)
         color = NOTE_MARKER_MATCH_COLOR if marker_index in matched_index_set else NOTE_MARKER_COLOR
         if marker.is_open:
-            cv2.circle(annotated, center, 11, color, 3, cv2.LINE_AA)
+            cv2.circle(annotated, center, OPEN_NOTE_MARKER_RADIUS, color, OPEN_NOTE_MARKER_THICKNESS, cv2.LINE_AA)
         else:
-            cv2.circle(annotated, center, 9, color, -1, cv2.LINE_AA)
+            cv2.circle(annotated, center, FRETTED_NOTE_MARKER_RADIUS, color, -1, cv2.LINE_AA)
     return annotated
 
 
@@ -353,7 +368,12 @@ def analyze_yolo_frame(
         image_size=image_size,
     )
     class_counts = count_detected_classes(detected_lines)
-    stable_grid = tracker.update(build_fretboard_grid(detected_lines))
+    stable_grid = tracker.update(
+        build_fretboard_grid(
+            detected_lines,
+            prior_grid=tracker.last_grid,
+        )
+    )
     if center_test_mode:
         note_markers = build_center_test_note_markers(stable_grid, selected_note)
     else:
@@ -385,6 +405,7 @@ def analyze_selected_lines_frame(
     primary_detected_lines: tuple[DetectedLine, ...],
     fallback_detected_lines: tuple[DetectedLine, ...] | None,
     selected_line_tracker: SelectedLineTracker,
+    note_marker_tracker: NoteMarkerTracker,
     hand_tracker: MediaPipeHandTracker,
     selected_note: str | None,
     reverse_strings: bool,
@@ -397,6 +418,7 @@ def analyze_selected_lines_frame(
     )
     class_count_source = fallback_detected_lines if fallback_detected_lines else primary_detected_lines
     if tracking_result.stable_grid is None:
+        note_marker_tracker.update(())
         hand_tracking = hand_tracker.process(frame_bgr, ())
         annotated = draw_detected_lines(frame_bgr, class_count_source)
         annotated = draw_fingertips(annotated, hand_tracking.fingertips)
@@ -420,6 +442,7 @@ def analyze_selected_lines_frame(
         note_markers = build_center_test_note_markers(stable_grid, selected_note)
     else:
         note_markers = build_note_markers(stable_grid, selected_note, reverse_strings=reverse_strings)
+    note_markers = note_marker_tracker.update(note_markers)
     hand_tracking = hand_tracker.process(frame_bgr, note_markers)
     quad_color = (255, 255, 255)
     if tracking_result.tracking_mode == "selected_lines_hold":
@@ -475,6 +498,7 @@ class VideoWorker(QThread):
         selected_note: str | None,
         reverse_strings: bool,
         center_test_mode: bool,
+        camera_calibration: CameraCalibration | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -485,7 +509,9 @@ class VideoWorker(QThread):
         self.selected_note = selected_note
         self.reverse_strings = reverse_strings
         self.center_test_mode = center_test_mode
+        self.camera_calibration = camera_calibration
         self.tracker = FretboardTracker(max_history=5)
+        self.note_marker_tracker = NoteMarkerTracker()
         self.selected_line_tracker = SelectedLineTracker(max_history=5)
         self.hand_tracker = MediaPipeHandTracker()
         self.latest_frame_bgr: np.ndarray | None = None
@@ -507,16 +533,20 @@ class VideoWorker(QThread):
 
     def set_selected_note(self, selected_note: str | None) -> None:
         self.selected_note = selected_note
+        self.note_marker_tracker.clear()
 
     def set_reverse_strings(self, reverse_strings: bool) -> None:
         self.reverse_strings = reverse_strings
+        self.note_marker_tracker.clear()
 
     def set_center_test_mode(self, center_test_mode: bool) -> None:
         self.center_test_mode = center_test_mode
+        self.note_marker_tracker.clear()
 
     def begin_line_selection(self) -> bool:
         if self.latest_frame_bgr is None:
             return False
+        self.note_marker_tracker.clear()
         self.selection_request = True
         return True
 
@@ -536,6 +566,7 @@ class VideoWorker(QThread):
 
     def clear_manual_tracking(self) -> None:
         self.selected_line_tracker.clear()
+        self.note_marker_tracker.clear()
         self.cancel_line_selection()
 
     def run(self) -> None:
@@ -579,6 +610,10 @@ class VideoWorker(QThread):
                 self.error_message.emit("Failed to read frame from webcam.")
                 break
 
+            if self.camera_calibration is not None:
+                frame_bgr = self.camera_calibration.undistort_frame(frame_bgr)
+            frame_bgr = cv2.flip(frame_bgr, 1)
+
             self.latest_frame_bgr = frame_bgr.copy()
             selected_note = self.selected_note
             reverse_strings = self.reverse_strings
@@ -595,11 +630,17 @@ class VideoWorker(QThread):
                 )
                 self.selected_line_tracker.clear()
                 class_counts = count_detected_classes(detected_lines)
-                stable_grid = self.tracker.update(build_fretboard_grid(detected_lines))
+                stable_grid = self.tracker.update(
+                    build_fretboard_grid(
+                        detected_lines,
+                        prior_grid=self.tracker.last_grid,
+                    )
+                )
                 if center_test_mode:
                     note_markers = build_center_test_note_markers(stable_grid, selected_note)
                 else:
                     note_markers = build_note_markers(stable_grid, selected_note, reverse_strings=reverse_strings)
+                note_markers = self.note_marker_tracker.update(note_markers)
                 hand_tracking = self.hand_tracker.process(frame_bgr, note_markers)
                 annotated = draw_detected_lines(frame_bgr, detected_lines)
                 annotated = draw_note_markers(
@@ -653,6 +694,7 @@ class VideoWorker(QThread):
                     primary_detected_lines=roi_detected_lines,
                     fallback_detected_lines=fallback_detected_lines,
                     selected_line_tracker=self.selected_line_tracker,
+                    note_marker_tracker=self.note_marker_tracker,
                     hand_tracker=self.hand_tracker,
                     selected_note=selected_note,
                     reverse_strings=reverse_strings,
@@ -666,11 +708,17 @@ class VideoWorker(QThread):
                     image_size=self.image_size,
                 )
                 class_counts = count_detected_classes(detected_lines)
-                stable_grid = self.tracker.update(build_fretboard_grid(detected_lines))
+                stable_grid = self.tracker.update(
+                    build_fretboard_grid(
+                        detected_lines,
+                        prior_grid=self.tracker.last_grid,
+                    )
+                )
                 if center_test_mode:
                     note_markers = build_center_test_note_markers(stable_grid, selected_note)
                 else:
                     note_markers = build_note_markers(stable_grid, selected_note, reverse_strings=reverse_strings)
+                note_markers = self.note_marker_tracker.update(note_markers)
                 hand_tracking = self.hand_tracker.process(frame_bgr, note_markers)
                 annotated = draw_detected_lines(frame_bgr, detected_lines)
                 annotated = draw_note_markers(
@@ -721,12 +769,18 @@ class VideoWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, model_path: Path, camera_index: int = 0) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        camera_index: int = 0,
+        camera_calibration: CameraCalibration | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Guitar Fretboard YOLO Viewer")
         self.resize(1360, 900)
 
         self.model_path = model_path
+        self.camera_calibration = camera_calibration
         self.worker: VideoWorker | None = None
         self.current_image: QImage | None = None
         self.selection_stage = "idle"
@@ -760,8 +814,10 @@ class MainWindow(QMainWindow):
         self.reference_fret_spin = QSpinBox()
         self.reference_fret_spin.setRange(1, 24)
         self.reference_fret_spin.setValue(12)
+        self.reference_fret_spin.setEnabled(False)
+        self.reference_fret_spin.setToolTip("현재 보이는 마지막 프렛을 기준으로 자동 추정됩니다.")
 
-        self.select_lines_button = QPushButton("Select Nut + Last Fret")
+        self.select_lines_button = QPushButton("Select Nut + Last Visible Fret")
         self.clear_tracking_button = QPushButton("Clear Manual Tracking")
         self.select_lines_button.clicked.connect(self.begin_line_selection)
         self.clear_tracking_button.clicked.connect(self.clear_manual_tracking)
@@ -825,7 +881,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Image Size"), 2, 4)
         layout.addWidget(self.image_size_spin, 2, 5)
 
-        layout.addWidget(QLabel("Reference Fret"), 3, 0)
+        layout.addWidget(QLabel("Reference Fret (auto)"), 3, 0)
         layout.addWidget(self.reference_fret_spin, 3, 1)
         layout.addWidget(self.select_lines_button, 3, 2)
         layout.addWidget(self.clear_tracking_button, 3, 3)
@@ -987,26 +1043,30 @@ class MainWindow(QMainWindow):
                 return
             self.selected_nut_line = selected_line
             self.selection_stage = "select_fret"
-            self.mode_label.setText(
-                f"Mode: selected nut - click visible fret {self.reference_fret_spin.value()}"
-            )
+            self.mode_label.setText("Mode: selected nut - click the last visible fret")
         else:
             candidates = tuple(line for line in self.worker.frozen_selection_lines if line.kind == "fret")
             selected_line = find_nearest_line(image_point, candidates)
             if selected_line is None:
-                self.mode_label.setText("Mode: click closer to the reference fret line")
+                self.mode_label.setText("Mode: click closer to the last visible fret line")
                 return
             self.selected_reference_line = selected_line
             if self.selected_nut_line is not None:
+                inferred_reference_fret = infer_selected_reference_fret_index(
+                    self.selected_nut_line,
+                    selected_line,
+                    self.worker.frozen_selection_lines,
+                )
+                self.reference_fret_spin.setValue(inferred_reference_fret)
                 self.worker.apply_line_selection(
                     self.selected_nut_line,
                     selected_line,
-                    int(self.reference_fret_spin.value()),
+                    inferred_reference_fret,
                 )
             self.selection_stage = "idle"
             self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
             self.mode_label.setText(
-                f"Mode: applying manual tracking ({self.reference_fret_spin.value()}f reference)"
+                f"Mode: applying manual tracking ({self.reference_fret_spin.value()}f last visible reference)"
             )
 
         self.render_current_frame()
@@ -1037,7 +1097,7 @@ class MainWindow(QMainWindow):
         if self.selection_stage == "select_nut":
             instruction = "Click the YOLO-detected nut line"
         elif self.selection_stage == "select_fret":
-            instruction = f"Click the YOLO-detected fret {self.reference_fret_spin.value()} line"
+            instruction = "Click the YOLO-detected last visible fret line"
         else:
             instruction = "Selecting YOLO lines"
 
@@ -1083,6 +1143,7 @@ class MainWindow(QMainWindow):
             selected_note=self.selected_note(),
             reverse_strings=self.reverse_checkbox.isChecked(),
             center_test_mode=self.center_test_checkbox.isChecked(),
+            camera_calibration=self.camera_calibration,
             parent=self,
         )
         self.worker.frame_ready.connect(self.update_frame)
@@ -1166,15 +1227,29 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PySide webcam viewer for guitar fretboard YOLO detection")
     parser.add_argument("--model", type=str, default=None, help="Path to the YOLO weight file")
     parser.add_argument("--camera", type=int, default=0, help="Webcam index to open first")
+    parser.add_argument(
+        "--camera-calibration",
+        type=str,
+        default=None,
+        help="Path to a camera calibration .npz file. If omitted, camera_calibration.npz is auto-loaded when present.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     model_path = resolve_model_path(args.model)
+    calibration_path = resolve_camera_calibration_path(args.camera_calibration)
+    camera_calibration = None
+    if calibration_path is not None:
+        camera_calibration = load_camera_calibration(calibration_path)
 
     app = QApplication(sys.argv)
-    window = MainWindow(model_path=model_path, camera_index=args.camera)
+    window = MainWindow(
+        model_path=model_path,
+        camera_index=args.camera,
+        camera_calibration=camera_calibration,
+    )
     window.show()
     return app.exec()
 
