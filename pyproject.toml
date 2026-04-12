@@ -1,0 +1,25 @@
+[project]
+name = "guitar-fret-test"
+version = "0.1.0"
+description = "Desktop guitar fretboard detector built with PySide6, YOLO, and MediaPipe."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mediapipe>=0.10",
+    "numpy>=2.0",
+    "opencv-python>=4.10",
+    "PySide6>=6.7",
+    "ultralytics>=8.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+package = false
