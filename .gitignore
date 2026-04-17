@@ -44,3 +44,7 @@ pip-wheel-metadata/
 
 # Logs
 *.log
+
+# local datasets & test data
+datasets/
+test_data/

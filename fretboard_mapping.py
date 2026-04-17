@@ -71,6 +71,13 @@ class DetectedLine:
 
 
 @dataclass(frozen=True)
+class DetectedStringPoints:
+    kind: str
+    points: tuple[tuple[float, float], ...]
+    confidence: float
+
+
+@dataclass(frozen=True)
 class StableFretboardGrid:
     nut_line: DetectedLine
     ordered_fret_lines: tuple[DetectedLine, ...]
@@ -1780,6 +1787,174 @@ def build_center_test_note_markers(
             0.5,
         )
     )
+    return (
+        NoteMarker(
+            string_index=STRING_COUNT // 2,
+            fret_index=fret_index,
+            point_xy=point,
+            is_open=False,
+        ),
+    )
+
+
+def string_points_midpoint(point_set: DetectedStringPoints) -> np.ndarray:
+    points = np.asarray(point_set.points, dtype=np.float32)
+    return np.mean(points, axis=0)
+
+
+def sort_string_point_sets(
+    point_sets: Sequence[DetectedStringPoints],
+) -> tuple[DetectedStringPoints, ...]:
+    nut_candidates = [point_set for point_set in point_sets if point_set.kind == "nut" and len(point_set.points) >= 2]
+    fret_candidates = [
+        point_set for point_set in point_sets if point_set.kind == "fret" and len(point_set.points) >= 2
+    ]
+    if not nut_candidates:
+        return ()
+
+    nut_points = max(nut_candidates, key=lambda point_set: point_set.confidence)
+    nut_midpoint = string_points_midpoint(nut_points)
+
+    def fret_sort_key(point_set: DetectedStringPoints) -> float:
+        return float(np.linalg.norm(string_points_midpoint(point_set) - nut_midpoint))
+
+    ordered_frets = sorted(fret_candidates, key=fret_sort_key)
+    return (nut_points, *ordered_frets)
+
+
+def build_note_markers_from_string_points(
+    point_sets: Sequence[DetectedStringPoints],
+    selected_note: str | None,
+    reverse_strings: bool = False,
+) -> tuple[NoteMarker, ...]:
+    if not point_sets:
+        return ()
+
+    if not selected_note or selected_note == "없음":
+        return build_all_midpoint_markers_from_string_points(point_sets)
+
+    pitch_class = NOTE_NAME_TO_PITCH_CLASS.get(selected_note)
+    if pitch_class is None:
+        return ()
+
+    ordered_point_sets = sort_string_point_sets(point_sets)
+    if not ordered_point_sets:
+        return ()
+
+    tuning = STANDARD_TUNING_MIDI[::-1] if reverse_strings else STANDARD_TUNING_MIDI
+    nut_points = ordered_point_sets[0].points
+    if len(nut_points) < STRING_COUNT:
+        return ()
+
+    markers: list[NoteMarker] = []
+    for screen_index, open_midi in enumerate(tuning):
+        if open_midi % 12 == pitch_class:
+            markers.append(
+                NoteMarker(
+                    string_index=screen_index,
+                    fret_index=0,
+                    point_xy=nut_points[screen_index],
+                    is_open=True,
+                )
+            )
+
+    fret_point_sets = ordered_point_sets[1:]
+    for fret_index, current_point_set in enumerate(fret_point_sets, start=1):
+        previous_points = nut_points if fret_index == 1 else fret_point_sets[fret_index - 2].points
+        current_points = current_point_set.points
+        if len(previous_points) < STRING_COUNT or len(current_points) < STRING_COUNT:
+            continue
+
+        for screen_index, open_midi in enumerate(tuning):
+            if (open_midi + fret_index) % 12 != pitch_class:
+                continue
+            point = interpolate_points(
+                point_array(previous_points[screen_index]),
+                point_array(current_points[screen_index]),
+                FRETTED_NOTE_ANCHOR_RATIO,
+            )
+            markers.append(
+                NoteMarker(
+                    string_index=screen_index,
+                    fret_index=fret_index,
+                    point_xy=point_tuple(point),
+                    is_open=False,
+                )
+            )
+
+    return tuple(markers)
+
+
+def build_all_midpoint_markers_from_string_points(
+    point_sets: Sequence[DetectedStringPoints],
+) -> tuple[NoteMarker, ...]:
+    ordered_point_sets = sort_string_point_sets(point_sets)
+    if not ordered_point_sets:
+        return ()
+
+    nut_points = ordered_point_sets[0].points
+    if len(nut_points) < STRING_COUNT:
+        return ()
+
+    markers: list[NoteMarker] = []
+    fret_point_sets = ordered_point_sets[1:]
+    for fret_index, current_point_set in enumerate(fret_point_sets, start=1):
+        previous_points = nut_points if fret_index == 1 else fret_point_sets[fret_index - 2].points
+        current_points = current_point_set.points
+        if len(previous_points) < STRING_COUNT or len(current_points) < STRING_COUNT:
+            continue
+
+        for string_index in range(STRING_COUNT):
+            point = interpolate_points(
+                point_array(previous_points[string_index]),
+                point_array(current_points[string_index]),
+                0.5,
+            )
+            markers.append(
+                NoteMarker(
+                    string_index=string_index,
+                    fret_index=fret_index,
+                    point_xy=point_tuple(point),
+                    is_open=False,
+                )
+            )
+
+    return tuple(markers)
+
+
+def build_center_test_note_markers_from_string_points(
+    point_sets: Sequence[DetectedStringPoints],
+    selected_note: str | None,
+) -> tuple[NoteMarker, ...]:
+    if not point_sets or not selected_note or selected_note == "없음":
+        return ()
+
+    fret_index = TEST_CENTER_NOTE_TO_FRET_INDEX.get(selected_note)
+    if fret_index is None:
+        return ()
+
+    ordered_point_sets = sort_string_point_sets(point_sets)
+    if not ordered_point_sets:
+        return ()
+
+    if fret_index == 0:
+        point = point_tuple(string_points_midpoint(ordered_point_sets[0]))
+        return (
+            NoteMarker(
+                string_index=STRING_COUNT // 2,
+                fret_index=0,
+                point_xy=point,
+                is_open=True,
+            ),
+        )
+
+    fret_point_sets = ordered_point_sets[1:]
+    if fret_index > len(fret_point_sets):
+        return ()
+
+    previous_midpoint = string_points_midpoint(ordered_point_sets[0] if fret_index == 1 else fret_point_sets[fret_index - 2])
+    current_midpoint = string_points_midpoint(fret_point_sets[fret_index - 1])
+    point = point_tuple(interpolate_points(previous_midpoint, current_midpoint, 0.5))
     return (
         NoteMarker(
             string_index=STRING_COUNT // 2,
