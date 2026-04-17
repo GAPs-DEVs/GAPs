@@ -16,6 +16,12 @@ uv sync --frozen
 uv run python pyside_fretboard_detector.py
 ```
 
+라벨링 툴 실행:
+
+```bash
+uv run python label_tools/labeling.py
+```
+
 다른 가중치를 쓰고 싶으면:
 
 ```bash

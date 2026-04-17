@@ -334,6 +334,7 @@ dependencies = [
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pyside6" },
+    { name = "pyyaml" },
     { name = "ultralytics" },
 ]
 
@@ -348,6 +349,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "opencv-python", specifier = ">=4.10" },
     { name = "pyside6", specifier = ">=6.7" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ultralytics", specifier = ">=8.3" },
 ]
 
