@@ -49,7 +49,7 @@ from fretboard_mapping import (
 from hand_tracking import Fingertip, MediaPipeHandTracker
 
 
-DEFAULT_MODEL_PATH = Path(__file__).with_name("models/weights/best06.pt")
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "models" / "weights" / "best06.pt"
 DEFAULT_CALIBRATION_PATH = Path(__file__).with_name("camera_calibration.npz")
 NOTE_CHOICES = ["없음", "도", "레", "미", "파", "솔", "라", "시", "높은 도"]
 POINT_THRESHOLD = 0.15
