@@ -409,6 +409,28 @@ class FretboardMappingTests(unittest.TestCase):
         self.assertGreater(result.stable_grid.nut_line.p1[1], 190.0)
         self.assertAlmostEqual(result.stable_grid.ordered_fret_lines[-1].p0[0], 166.0, delta=3.0)
 
+    def test_selected_line_tracker_prefers_neck_outermost_visible_fret(self) -> None:
+        tracker = SelectedLineTracker(max_history=5)
+        tracker.initialize_from_lines(
+            DetectedLine("nut", (40.0, 30.0), (40.0, 190.0), 1.0),
+            DetectedLine("fret", (160.0, 30.0), (160.0, 190.0), 1.0),
+            reference_fret_index=12,
+        )
+
+        result = tracker.update(
+            [
+                DetectedLine("nut", (46.0, 34.0), (46.0, 194.0), 0.96),
+                DetectedLine("fret", (154.0, 34.0), (154.0, 194.0), 0.95),
+                DetectedLine("fret", (172.0, 34.0), (172.0, 194.0), 0.89),
+            ]
+        )
+
+        self.assertEqual(result.tracking_mode, "selected_lines_tracking")
+        self.assertIsNotNone(result.stable_grid)
+        assert result.stable_grid is not None
+        self.assertAlmostEqual(result.stable_grid.nut_line.p0[0], 46.0, delta=1.0)
+        self.assertGreater(result.stable_grid.ordered_fret_lines[-1].p0[0], 168.0)
+
     def test_selected_line_tracker_uses_current_last_visible_fret_as_reference(self) -> None:
         tracker = SelectedLineTracker(max_history=5)
         tracker.initialize_from_lines(
