@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from ultralytics import YOLO
 
 from camera_calibration import CameraCalibration, load_camera_calibration
+from fretboard_edge_refinement import EdgeRefinementResult, refine_grid_with_edge_lines_diagnostics
 from fretboard_mapping import (
     DetectedLine,
     FretboardTracker,
@@ -62,6 +63,10 @@ CLASS_COLORS = {
 NOTE_MARKER_COLOR = (0, 218, 255)
 NOTE_MARKER_MATCH_COLOR = (80, 255, 120)
 FINGERTIP_COLOR = (255, 180, 80)
+EDGE_GUIDE_STRING_COLOR = (80, 255, 120)
+EDGE_GUIDE_INFERRED_STRING_COLOR = (180, 185, 190)
+EDGE_GUIDE_FRET_COLOR = (80, 190, 255)
+EDGE_GUIDE_INTERSECTION_COLOR = (0, 230, 255)
 OPEN_NOTE_MARKER_RADIUS = 7
 OPEN_NOTE_MARKER_THICKNESS = 2
 FRETTED_NOTE_MARKER_RADIUS = 6
@@ -78,6 +83,7 @@ class FrameAnalysis:
     hand_tracking_available: bool
     tracking_mode: str
     reference_fret_index: int | None = None
+    edge_refinement: EdgeRefinementResult | None = None
 
 
 @dataclass
@@ -95,6 +101,8 @@ class InferenceStats:
     hand_tracking_available: bool
     tracking_mode: str
     reference_fret_index: int | None = None
+    edge_string_count: int = 0
+    edge_fret_count: int = 0
 
 
 class VideoLabel(QLabel):
@@ -349,6 +357,83 @@ def draw_reference_quad(
     return annotated
 
 
+def draw_edge_guides(
+    frame_bgr: np.ndarray,
+    stable_grid: StableFretboardGrid | None,
+    edge_refinement: EdgeRefinementResult | None = None,
+) -> np.ndarray:
+    if stable_grid is None or not stable_grid.string_crossings:
+        return frame_bgr
+
+    annotated = frame_bgr.copy()
+    fitted_string_indices = set(edge_refinement.fitted_string_indices if edge_refinement is not None else ())
+    refined_fret_indices = set(edge_refinement.refined_fret_indices if edge_refinement is not None else ())
+
+    if edge_refinement is None:
+        fret_lines_to_draw = stable_grid.ordered_fret_lines
+    else:
+        fret_lines_to_draw = tuple(
+            stable_grid.ordered_fret_lines[fret_index]
+            for fret_index in sorted(refined_fret_indices)
+            if 0 <= fret_index < len(stable_grid.ordered_fret_lines)
+        )
+    for line in fret_lines_to_draw:
+        p0 = tuple(int(round(value)) for value in line.p0)
+        p1 = tuple(int(round(value)) for value in line.p1)
+        cv2.line(annotated, p0, p1, EDGE_GUIDE_FRET_COLOR, 1, cv2.LINE_AA)
+
+    has_detected_strings = bool(fitted_string_indices)
+    for string_index in range(len(stable_grid.string_crossings[0])):
+        if edge_refinement is not None and not has_detected_strings:
+            continue
+        points = [
+            tuple(int(round(value)) for value in row[string_index])
+            for row in stable_grid.string_crossings
+            if string_index < len(row)
+        ]
+        if len(points) >= 2:
+            is_detected_string = edge_refinement is None or string_index in fitted_string_indices
+            cv2.polylines(
+                annotated,
+                [np.asarray(points, dtype=np.int32)],
+                False,
+                EDGE_GUIDE_STRING_COLOR if is_detected_string else EDGE_GUIDE_INFERRED_STRING_COLOR,
+                2 if is_detected_string else 1,
+                cv2.LINE_AA,
+            )
+
+    visible_row_indices = {0, *(fret_index + 1 for fret_index in refined_fret_indices)}
+    for row_index, row in enumerate(stable_grid.string_crossings):
+        if edge_refinement is not None and row_index not in visible_row_indices:
+            continue
+        for string_index, point in enumerate(row):
+            if edge_refinement is not None and not has_detected_strings:
+                continue
+            center = tuple(int(round(value)) for value in point)
+            if edge_refinement is not None and string_index not in fitted_string_indices:
+                cv2.circle(annotated, center, 3, EDGE_GUIDE_INTERSECTION_COLOR, 1, cv2.LINE_AA)
+            else:
+                cv2.circle(annotated, center, 3, EDGE_GUIDE_INTERSECTION_COLOR, -1, cv2.LINE_AA)
+
+    return annotated
+
+
+def filter_note_markers_by_edge_frets(
+    note_markers: tuple[NoteMarker, ...],
+    edge_refinement: EdgeRefinementResult | None,
+    edge_supported_notes_only: bool,
+) -> tuple[NoteMarker, ...]:
+    if not edge_supported_notes_only or edge_refinement is None:
+        return note_markers
+
+    supported_frets = {fret_index + 1 for fret_index in edge_refinement.refined_fret_indices}
+    return tuple(
+        marker
+        for marker in note_markers
+        if marker.is_open or marker.fret_index in supported_frets
+    )
+
+
 def analyze_yolo_frame(
     frame_bgr: np.ndarray,
     model: YOLO,
@@ -359,6 +444,8 @@ def analyze_yolo_frame(
     selected_note: str | None,
     reverse_strings: bool,
     center_test_mode: bool = False,
+    show_edge_guides: bool = False,
+    edge_supported_notes_only: bool = False,
     tracking_mode: str = "yolo_assist",
 ) -> tuple[np.ndarray, FrameAnalysis]:
     detected_lines = predict_detected_lines(
@@ -374,13 +461,22 @@ def analyze_yolo_frame(
             prior_grid=tracker.last_grid,
         )
     )
+    edge_refinement = refine_grid_with_edge_lines_diagnostics(frame_bgr, stable_grid)
+    stable_grid = edge_refinement.grid
     if center_test_mode:
         note_markers = build_center_test_note_markers(stable_grid, selected_note)
     else:
         note_markers = build_note_markers(stable_grid, selected_note, reverse_strings=reverse_strings)
+    note_markers = filter_note_markers_by_edge_frets(
+        note_markers,
+        edge_refinement,
+        edge_supported_notes_only,
+    )
     hand_tracking = hand_tracker.process(frame_bgr, note_markers)
 
     annotated = draw_detected_lines(frame_bgr, detected_lines)
+    if show_edge_guides:
+        annotated = draw_edge_guides(annotated, stable_grid, edge_refinement=edge_refinement)
     annotated = draw_note_markers(
         annotated,
         note_markers,
@@ -396,6 +492,7 @@ def analyze_yolo_frame(
         class_counts=class_counts,
         hand_tracking_available=hand_tracking.backend_available,
         tracking_mode=tracking_mode,
+        edge_refinement=edge_refinement,
     )
     return annotated, analysis
 
@@ -410,6 +507,8 @@ def analyze_selected_lines_frame(
     selected_note: str | None,
     reverse_strings: bool,
     center_test_mode: bool = False,
+    show_edge_guides: bool = False,
+    edge_supported_notes_only: bool = False,
 ) -> tuple[np.ndarray, FrameAnalysis]:
     reference_fret_index = selected_line_tracker.reference_fret_index
     tracking_result = selected_line_tracker.update(
@@ -435,13 +534,19 @@ def analyze_selected_lines_frame(
         )
         return annotated, analysis
 
-    stable_grid = tracking_result.stable_grid
+    edge_refinement = refine_grid_with_edge_lines_diagnostics(frame_bgr, tracking_result.stable_grid)
+    stable_grid = edge_refinement.grid
     tracked_lines = tracking_result.tracked_lines
     class_counts = count_detected_classes(class_count_source)
     if center_test_mode:
         note_markers = build_center_test_note_markers(stable_grid, selected_note)
     else:
         note_markers = build_note_markers(stable_grid, selected_note, reverse_strings=reverse_strings)
+    note_markers = filter_note_markers_by_edge_frets(
+        note_markers,
+        edge_refinement,
+        edge_supported_notes_only,
+    )
     note_markers = note_marker_tracker.update(note_markers)
     hand_tracking = hand_tracker.process(frame_bgr, note_markers)
     quad_color = (255, 255, 255)
@@ -451,6 +556,8 @@ def analyze_selected_lines_frame(
         quad_color = (80, 255, 170)
     annotated = draw_detected_lines(frame_bgr, tracked_lines)
     annotated = draw_reference_quad(annotated, stable_grid, color=quad_color)
+    if show_edge_guides:
+        annotated = draw_edge_guides(annotated, stable_grid, edge_refinement=edge_refinement)
     annotated = draw_note_markers(
         annotated,
         note_markers,
@@ -467,6 +574,7 @@ def analyze_selected_lines_frame(
         hand_tracking_available=hand_tracking.backend_available,
         tracking_mode=tracking_result.tracking_mode,
         reference_fret_index=reference_fret_index,
+        edge_refinement=edge_refinement,
     )
     return annotated, analysis
 
@@ -498,6 +606,8 @@ class VideoWorker(QThread):
         selected_note: str | None,
         reverse_strings: bool,
         center_test_mode: bool,
+        show_edge_guides: bool,
+        edge_supported_notes_only: bool,
         camera_calibration: CameraCalibration | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -509,6 +619,8 @@ class VideoWorker(QThread):
         self.selected_note = selected_note
         self.reverse_strings = reverse_strings
         self.center_test_mode = center_test_mode
+        self.show_edge_guides = show_edge_guides
+        self.edge_supported_notes_only = edge_supported_notes_only
         self.camera_calibration = camera_calibration
         self.tracker = FretboardTracker(max_history=5)
         self.note_marker_tracker = NoteMarkerTracker()
@@ -541,6 +653,13 @@ class VideoWorker(QThread):
 
     def set_center_test_mode(self, center_test_mode: bool) -> None:
         self.center_test_mode = center_test_mode
+        self.note_marker_tracker.clear()
+
+    def set_show_edge_guides(self, show_edge_guides: bool) -> None:
+        self.show_edge_guides = show_edge_guides
+
+    def set_edge_supported_notes_only(self, edge_supported_notes_only: bool) -> None:
+        self.edge_supported_notes_only = edge_supported_notes_only
         self.note_marker_tracker.clear()
 
     def begin_line_selection(self) -> bool:
@@ -618,6 +737,8 @@ class VideoWorker(QThread):
             selected_note = self.selected_note
             reverse_strings = self.reverse_strings
             center_test_mode = self.center_test_mode
+            show_edge_guides = self.show_edge_guides
+            edge_supported_notes_only = self.edge_supported_notes_only
 
             inference_start = perf_counter()
 
@@ -636,13 +757,22 @@ class VideoWorker(QThread):
                         prior_grid=self.tracker.last_grid,
                     )
                 )
+                edge_refinement = refine_grid_with_edge_lines_diagnostics(frame_bgr, stable_grid)
+                stable_grid = edge_refinement.grid
                 if center_test_mode:
                     note_markers = build_center_test_note_markers(stable_grid, selected_note)
                 else:
                     note_markers = build_note_markers(stable_grid, selected_note, reverse_strings=reverse_strings)
+                note_markers = filter_note_markers_by_edge_frets(
+                    note_markers,
+                    edge_refinement,
+                    edge_supported_notes_only,
+                )
                 note_markers = self.note_marker_tracker.update(note_markers)
                 hand_tracking = self.hand_tracker.process(frame_bgr, note_markers)
                 annotated = draw_detected_lines(frame_bgr, detected_lines)
+                if show_edge_guides:
+                    annotated = draw_edge_guides(annotated, stable_grid, edge_refinement=edge_refinement)
                 annotated = draw_note_markers(
                     annotated,
                     note_markers,
@@ -658,6 +788,7 @@ class VideoWorker(QThread):
                     class_counts=class_counts,
                     hand_tracking_available=hand_tracking.backend_available,
                     tracking_mode="selection_ready",
+                    edge_refinement=edge_refinement,
                 )
                 self.selection_request = False
                 self.selection_active = True
@@ -699,6 +830,8 @@ class VideoWorker(QThread):
                     selected_note=selected_note,
                     reverse_strings=reverse_strings,
                     center_test_mode=center_test_mode,
+                    show_edge_guides=show_edge_guides,
+                    edge_supported_notes_only=edge_supported_notes_only,
                 )
             else:
                 detected_lines = predict_detected_lines(
@@ -714,13 +847,22 @@ class VideoWorker(QThread):
                         prior_grid=self.tracker.last_grid,
                     )
                 )
+                edge_refinement = refine_grid_with_edge_lines_diagnostics(frame_bgr, stable_grid)
+                stable_grid = edge_refinement.grid
                 if center_test_mode:
                     note_markers = build_center_test_note_markers(stable_grid, selected_note)
                 else:
                     note_markers = build_note_markers(stable_grid, selected_note, reverse_strings=reverse_strings)
+                note_markers = filter_note_markers_by_edge_frets(
+                    note_markers,
+                    edge_refinement,
+                    edge_supported_notes_only,
+                )
                 note_markers = self.note_marker_tracker.update(note_markers)
                 hand_tracking = self.hand_tracker.process(frame_bgr, note_markers)
                 annotated = draw_detected_lines(frame_bgr, detected_lines)
+                if show_edge_guides:
+                    annotated = draw_edge_guides(annotated, stable_grid, edge_refinement=edge_refinement)
                 annotated = draw_note_markers(
                     annotated,
                     note_markers,
@@ -736,6 +878,7 @@ class VideoWorker(QThread):
                     class_counts=class_counts,
                     hand_tracking_available=hand_tracking.backend_available,
                     tracking_mode="yolo_assist",
+                    edge_refinement=edge_refinement,
                 )
             inference_ms = (perf_counter() - inference_start) * 1000.0
 
@@ -761,6 +904,16 @@ class VideoWorker(QThread):
                 hand_tracking_available=analysis.hand_tracking_available,
                 tracking_mode=analysis.tracking_mode,
                 reference_fret_index=analysis.reference_fret_index,
+                edge_string_count=(
+                    len(analysis.edge_refinement.fitted_string_indices)
+                    if analysis.edge_refinement is not None
+                    else 0
+                ),
+                edge_fret_count=(
+                    len(analysis.edge_refinement.refined_fret_indices)
+                    if analysis.edge_refinement is not None
+                    else 0
+                ),
             )
             self.frame_ready.emit(bgr_to_qimage(annotated), stats)
 
@@ -810,6 +963,11 @@ class MainWindow(QMainWindow):
         self.reverse_checkbox.stateChanged.connect(self.handle_reverse_change)
         self.center_test_checkbox = QCheckBox("중앙 테스트 점")
         self.center_test_checkbox.stateChanged.connect(self.handle_center_test_change)
+        self.edge_guides_checkbox = QCheckBox("줄/교차점 표시")
+        self.edge_guides_checkbox.setChecked(True)
+        self.edge_guides_checkbox.stateChanged.connect(self.handle_edge_guides_change)
+        self.edge_supported_notes_checkbox = QCheckBox("검출 프렛만 후보")
+        self.edge_supported_notes_checkbox.stateChanged.connect(self.handle_edge_supported_notes_change)
 
         self.reference_fret_spin = QSpinBox()
         self.reference_fret_spin.setRange(1, 24)
@@ -878,8 +1036,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.note_combo, 2, 1)
         layout.addWidget(self.reverse_checkbox, 2, 2)
         layout.addWidget(self.center_test_checkbox, 2, 3)
-        layout.addWidget(QLabel("Image Size"), 2, 4)
-        layout.addWidget(self.image_size_spin, 2, 5)
+        layout.addWidget(self.edge_guides_checkbox, 2, 4)
+        layout.addWidget(self.edge_supported_notes_checkbox, 2, 5)
+        layout.addWidget(QLabel("Image Size"), 2, 6)
+        layout.addWidget(self.image_size_spin, 2, 7)
 
         layout.addWidget(QLabel("Reference Fret (auto)"), 3, 0)
         layout.addWidget(self.reference_fret_spin, 3, 1)
@@ -889,15 +1049,15 @@ class MainWindow(QMainWindow):
         button_row = QHBoxLayout()
         button_row.addWidget(self.start_button)
         button_row.addWidget(self.stop_button)
-        layout.addLayout(button_row, 3, 4, 1, 2)
+        layout.addLayout(button_row, 3, 4, 1, 4)
 
         layout.addWidget(QLabel("Mode"), 4, 0)
-        layout.addWidget(self.mode_label, 4, 1, 1, 5)
+        layout.addWidget(self.mode_label, 4, 1, 1, 7)
         layout.addWidget(QLabel("Status"), 5, 0)
-        layout.addWidget(self.status_label, 5, 1, 1, 5)
-        layout.addWidget(self.fps_label, 6, 3)
-        layout.addWidget(self.inference_label, 6, 4)
-        layout.addWidget(self.counts_label, 6, 5)
+        layout.addWidget(self.status_label, 5, 1, 1, 7)
+        layout.addWidget(self.fps_label, 6, 5)
+        layout.addWidget(self.inference_label, 6, 6)
+        layout.addWidget(self.counts_label, 6, 7)
 
         return controls_box
 
@@ -913,6 +1073,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         note_label = self.selected_note() or "없음"
         suffix = " / 중앙 테스트 점" if self.center_test_checkbox.isChecked() else ""
+        if self.edge_supported_notes_checkbox.isChecked():
+            suffix += " / 검출 프렛 후보"
         self.status_label.setText(
             f"선택 음: {note_label} / 후보 {marker_count}개 / 정확 운지 {matched_count}개 / visible frets: {visible_frets}{suffix}"
         )
@@ -957,6 +1119,16 @@ class MainWindow(QMainWindow):
     def handle_center_test_change(self, _: int) -> None:
         if self.worker is not None:
             self.worker.set_center_test_mode(self.center_test_checkbox.isChecked())
+        else:
+            self.update_note_status(marker_count=0, visible_frets=0)
+
+    def handle_edge_guides_change(self, _: int) -> None:
+        if self.worker is not None:
+            self.worker.set_show_edge_guides(self.edge_guides_checkbox.isChecked())
+
+    def handle_edge_supported_notes_change(self, _: int) -> None:
+        if self.worker is not None:
+            self.worker.set_edge_supported_notes_only(self.edge_supported_notes_checkbox.isChecked())
         else:
             self.update_note_status(marker_count=0, visible_frets=0)
 
@@ -1143,6 +1315,8 @@ class MainWindow(QMainWindow):
             selected_note=self.selected_note(),
             reverse_strings=self.reverse_checkbox.isChecked(),
             center_test_mode=self.center_test_checkbox.isChecked(),
+            show_edge_guides=self.edge_guides_checkbox.isChecked(),
+            edge_supported_notes_only=self.edge_supported_notes_checkbox.isChecked(),
             camera_calibration=self.camera_calibration,
             parent=self,
         )
@@ -1188,6 +1362,8 @@ class MainWindow(QMainWindow):
 
         self.render_current_frame()
         suffix = " / 중앙 테스트 점" if stats.center_test_mode else ""
+        if self.edge_supported_notes_checkbox.isChecked():
+            suffix += " / 검출 프렛 후보"
         hand_suffix = ""
         if not stats.hand_tracking_available:
             hand_suffix = " / 손 검출 비활성"
@@ -1197,7 +1373,10 @@ class MainWindow(QMainWindow):
         self.fps_label.setText(f"FPS: {stats.fps:.1f}")
         self.inference_label.setText(f"Inference: {stats.inference_ms:.1f} ms")
         self.counts_label.setText(
-            f"Detections: {stats.total_detections} ({format_counts(stats.class_counts)}) / fingertips: {stats.fingertip_count}"
+            f"Detections: {stats.total_detections} ({format_counts(stats.class_counts)})"
+            f" / edge strings: {stats.edge_string_count}/6"
+            f" / edge frets: {stats.edge_fret_count}/{stats.visible_fret_count}"
+            f" / fingertips: {stats.fingertip_count}"
         )
 
     def handle_worker_error(self, message: str) -> None:

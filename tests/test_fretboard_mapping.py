@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import unittest
 
+import cv2
+import numpy as np
+
+from fretboard_edge_refinement import refine_grid_with_edge_lines, refine_grid_with_edge_lines_diagnostics
 from fretboard_mapping import (
     DetectedLine,
     FRETTED_NOTE_ANCHOR_RATIO,
@@ -80,7 +84,7 @@ class FretboardMappingTests(unittest.TestCase):
             ],
         )
 
-    def test_fretted_marker_uses_midpoint_anchor(self) -> None:
+    def test_fretted_marker_uses_fret_side_anchor(self) -> None:
         grid = build_grid_from_lines(
             make_line("nut", 0.0),
             [
@@ -95,6 +99,7 @@ class FretboardMappingTests(unittest.TestCase):
         )
 
         expected_y = 20.0 + (38.0 - 20.0) * FRETTED_NOTE_ANCHOR_RATIO
+        self.assertGreater(FRETTED_NOTE_ANCHOR_RATIO, 0.5)
         self.assertAlmostEqual(d_string_fret_two.point_xy[1], expected_y, places=4)
 
     def test_c_note_maps_to_a_string_third_fret(self) -> None:
@@ -565,6 +570,90 @@ class FretboardMappingTests(unittest.TestCase):
         restored_ninth_fret = result.stable_grid.ordered_fret_lines[8]
         self.assertAlmostEqual(restored_ninth_fret.p0[0], shifted_ninth_fret.p0[0], delta=4.0)
         self.assertAlmostEqual(restored_ninth_fret.p1[0], shifted_ninth_fret.p1[0], delta=4.0)
+
+    def test_edge_refinement_moves_string_crossings_to_visible_string_lines(self) -> None:
+        frame = np.zeros((180, 140, 3), dtype=np.uint8)
+        grid = build_grid_from_lines(
+            DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
+            [
+                DetectedLine("fret", (10.0, 60.0), (110.0, 60.0), 1.0),
+                DetectedLine("fret", (10.0, 100.0), (110.0, 100.0), 1.0),
+                DetectedLine("fret", (10.0, 140.0), (110.0, 140.0), 1.0),
+            ],
+        )
+
+        string_x_positions = [18, 34, 51, 69, 86, 103]
+        for x_position in string_x_positions:
+            cv2.line(frame, (x_position, 20), (x_position, 140), (255, 255, 255), 1, cv2.LINE_AA)
+        for y_position in (20, 60, 100, 140):
+            cv2.line(frame, (10, y_position), (110, y_position), (190, 190, 190), 1, cv2.LINE_AA)
+
+        refined_grid = refine_grid_with_edge_lines(frame, grid)
+
+        self.assertIsNotNone(refined_grid)
+        assert refined_grid is not None
+        middle_fret_crossings = refined_grid.string_crossings[2]
+        for crossing, expected_x in zip(middle_fret_crossings, string_x_positions):
+            self.assertAlmostEqual(crossing[0], expected_x, delta=3.0)
+
+    def test_edge_refinement_keeps_original_grid_when_edges_are_missing(self) -> None:
+        frame = np.zeros((180, 140, 3), dtype=np.uint8)
+        grid = build_grid_from_lines(
+            DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
+            [
+                DetectedLine("fret", (10.0, 60.0), (110.0, 60.0), 1.0),
+                DetectedLine("fret", (10.0, 100.0), (110.0, 100.0), 1.0),
+                DetectedLine("fret", (10.0, 140.0), (110.0, 140.0), 1.0),
+            ],
+        )
+
+        refined_grid = refine_grid_with_edge_lines(frame, grid)
+
+        self.assertIs(refined_grid, grid)
+
+    def test_edge_refinement_reports_only_frets_with_edge_support(self) -> None:
+        frame = np.zeros((180, 140, 3), dtype=np.uint8)
+        grid = build_grid_from_lines(
+            DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
+            [
+                DetectedLine("fret", (10.0, 60.0), (110.0, 60.0), 1.0),
+                DetectedLine("fret", (10.0, 100.0), (110.0, 100.0), 1.0),
+                DetectedLine("fret", (10.0, 140.0), (110.0, 140.0), 1.0),
+            ],
+        )
+        cv2.line(frame, (10, 60), (110, 60), (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.line(frame, (10, 140), (110, 140), (220, 220, 220), 1, cv2.LINE_AA)
+
+        result = refine_grid_with_edge_lines_diagnostics(frame, grid)
+
+        self.assertIn(0, result.refined_fret_indices)
+        self.assertIn(2, result.refined_fret_indices)
+        self.assertNotIn(1, result.refined_fret_indices)
+
+    def test_edge_refinement_infers_missing_strings_from_partial_detections(self) -> None:
+        frame = np.zeros((220, 380, 3), dtype=np.uint8)
+        grid = build_grid_from_lines(
+            DetectedLine("nut", (20.0, 30.0), (320.0, 30.0), 1.0),
+            [
+                DetectedLine("fret", (20.0, 80.0), (320.0, 80.0), 1.0),
+                DetectedLine("fret", (20.0, 130.0), (320.0, 130.0), 1.0),
+                DetectedLine("fret", (20.0, 180.0), (320.0, 180.0), 1.0),
+            ],
+        )
+        fallback_nut_points = grid.string_crossings[0]
+        visible_string_one_x = int(round(fallback_nut_points[1][0] + 10.0))
+        visible_string_four_x = int(round(fallback_nut_points[4][0] + 10.0))
+        cv2.line(frame, (visible_string_one_x, 30), (visible_string_one_x, 180), (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.line(frame, (visible_string_four_x, 30), (visible_string_four_x, 180), (255, 255, 255), 1, cv2.LINE_AA)
+
+        result = refine_grid_with_edge_lines_diagnostics(frame, grid)
+
+        self.assertEqual(result.fitted_string_indices, (1, 4))
+        assert result.grid is not None
+        middle_row = result.grid.string_crossings[2]
+        fallback_middle_row = grid.string_crossings[2]
+        self.assertGreater(middle_row[2][0], fallback_middle_row[2][0] + 4.0)
+        self.assertGreater(middle_row[3][0], fallback_middle_row[3][0] + 4.0)
 
 
 if __name__ == "__main__":
