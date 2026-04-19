@@ -97,7 +97,7 @@ class NoteMarkerTracker:
         stable_alpha: float = NOTE_MARKER_STABLE_ALPHA,
         fast_alpha: float = NOTE_MARKER_FAST_ALPHA,
         fast_move_px: float = NOTE_MARKER_FAST_MOVE_PX,
-        keep_missing_frames: int = NOTE_MARKER_KEEP_MISSING_FRAMES,
+        keep_missing_frames: int = NOTE_MARKER_KEEP_MISSING_FRAMES, 
     ) -> None:
         self.stable_alpha = stable_alpha
         self.fast_alpha = fast_alpha
@@ -276,6 +276,10 @@ class SelectedLineTracker:
         ):
             return SelectedTrackingResult(stable_grid=None, tracked_lines=(), tracking_mode="selected_lines_lost")
 
+        primary_support_grid = self._build_support_projected_grid(primary_detected_lines, relaxed=False)
+        if primary_support_grid is not None:
+            return self._apply_grid_match(primary_support_grid, tracking_mode="selected_lines_tracking")
+
         primary_pair = self._match_locked_pair(
             nut_candidates=[line for line in primary_detected_lines if line.kind == "nut"],
             fret_candidates=[line for line in primary_detected_lines if line.kind == "fret"],
@@ -291,11 +295,17 @@ class SelectedLineTracker:
                 support_lines=primary_detected_lines,
             )
 
-        primary_support_grid = self._build_support_projected_grid(primary_detected_lines, relaxed=False)
-        if primary_support_grid is not None:
-            return self._apply_grid_match(primary_support_grid, tracking_mode="selected_lines_tracking")
-
         if fallback_detected_lines is not None:
+            fallback_support_grid = self._build_support_projected_grid(
+                fallback_detected_lines,
+                relaxed=True,
+            )
+            if fallback_support_grid is not None:
+                return self._apply_grid_match(
+                    fallback_support_grid,
+                    tracking_mode="selected_lines_reacquired",
+                )
+
             fallback_pair = self._match_locked_pair(
                 nut_candidates=[line for line in fallback_detected_lines if line.kind == "nut"],
                 fret_candidates=[line for line in fallback_detected_lines if line.kind == "fret"],
@@ -313,16 +323,6 @@ class SelectedLineTracker:
                     *fallback_pair,
                     tracking_mode="selected_lines_reacquired",
                     support_lines=fallback_support_lines,
-                )
-
-            fallback_support_grid = self._build_support_projected_grid(
-                fallback_detected_lines,
-                relaxed=True,
-            )
-            if fallback_support_grid is not None:
-                return self._apply_grid_match(
-                    fallback_support_grid,
-                    tracking_mode="selected_lines_reacquired",
                 )
 
         combined_lines = tuple(primary_detected_lines) + tuple(fallback_detected_lines or ())
@@ -410,7 +410,6 @@ class SelectedLineTracker:
         minimum_ratio, maximum_ratio = self._gap_ratio_bounds(relaxed=relaxed)
 
         ranked_candidates: list[tuple[float, float, DetectedLine]] = []
-        best_score = float("inf")
         for fret_candidate in fret_candidates:
             normalized_candidate = orient_line_like_reference(
                 orient_line_for_screen(fret_candidate),
@@ -426,25 +425,27 @@ class SelectedLineTracker:
 
             candidate_score = line_match_score(self.current_reference_fret_line, normalized_candidate)
             ranked_candidates.append((candidate_gap, candidate_score, normalized_candidate))
-            best_score = min(best_score, candidate_score)
 
         if not ranked_candidates:
             return None
 
-        score_slack = max(
-            SELECTED_REFERENCE_SCORE_SLACK,
-            line_length(self.current_reference_fret_line) * 0.12,
+        # When the locked end fret is partially occluded, prefer the fret that is
+        # furthest along the neck among plausible candidates instead of the one
+        # whose endpoints happen to look most similar to the previous frame.
+        score_limit = max(
+            220.0,
+            line_length(self.current_reference_fret_line) * 1.2,
         )
-        preferred_candidates = [
+        plausible_candidates = [
             candidate
             for candidate in ranked_candidates
-            if candidate[1] <= best_score + score_slack
+            if candidate[1] <= score_limit
         ]
-        if not preferred_candidates:
+        if not plausible_candidates:
             return None
 
-        preferred_candidates.sort(key=lambda candidate: (-candidate[0], candidate[1]))
-        return preferred_candidates[0][2]
+        plausible_candidates.sort(key=lambda candidate: (-candidate[0], candidate[1]))
+        return plausible_candidates[0][2]
 
     def _build_reference_locked_grid(
         self,
@@ -542,14 +543,6 @@ class SelectedLineTracker:
         if translated_reference is None:
             return None
 
-        provisional_grid = build_grid_from_reference_lines(
-            nut_line=matched_nut,
-            reference_fret_line=translated_reference,
-            reference_fret_index=self.reference_fret_index,
-        )
-        if provisional_grid is None:
-            return None
-
         reference_direction = normalize(line_vector(matched_nut))
         support_fret_lines = [
             orient_line_like_reference(orient_line_for_screen(line), reference_direction)
@@ -557,6 +550,28 @@ class SelectedLineTracker:
             if line.kind == "fret"
         ]
         if len(support_fret_lines) < SELECTED_REFERENCE_SUPPORT_MIN_LINES:
+            return None
+
+        refined_pair = refine_reference_pair_with_support(
+            matched_nut,
+            translated_reference,
+            support_lines=(matched_nut, *support_fret_lines),
+            prior_grid=self.last_stable_grid,
+        )
+        if refined_pair is not None:
+            matched_nut, translated_reference = refined_pair
+            reference_direction = normalize(line_vector(matched_nut))
+            support_fret_lines = [
+                orient_line_like_reference(line, reference_direction)
+                for line in support_fret_lines
+            ]
+
+        provisional_grid = build_grid_from_reference_lines(
+            nut_line=matched_nut,
+            reference_fret_line=translated_reference,
+            reference_fret_index=self.reference_fret_index,
+        )
+        if provisional_grid is None:
             return None
 
         refined_support_frets = refine_lines_with_fitted_edges(
@@ -580,6 +595,8 @@ class SelectedLineTracker:
             nut_line=matched_nut,
             indexed_fret_lines=indexed_fret_lines,
             max_fret_index=self.reference_fret_index,
+            support_lines=(matched_nut, *support_fret_lines),
+            prior_grid=self.last_stable_grid,
         )
         if candidate_grid is None or not candidate_grid.ordered_fret_lines:
             return None
