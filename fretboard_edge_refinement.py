@@ -32,6 +32,11 @@ EDGE_BIN_TARGET_PX = 18
 MIN_STRING_SUPPORT_POINTS = 5
 MIN_FRET_SUPPORT_POINTS = 4
 MIN_PEAK_ABSOLUTE_STRENGTH = 0.035
+STRING_TRACKER_DETECTED_ALPHA = 0.62
+STRING_TRACKER_INFERRED_ALPHA = 0.22
+STRING_TRACKER_OUTLIER_ALPHA = 0.14
+STRING_TRACKER_OUTLIER_DELTA_NORM = 0.085
+STRING_TRACKER_MAX_MISSING_FRAMES = 10
 
 
 @dataclass(frozen=True)
@@ -54,22 +59,130 @@ class FittedCanonicalLine:
 
 
 @dataclass(frozen=True)
+class NormalizedStringLine:
+    slope: float
+    intercept: float
+
+    def value_at(self, y_norm: float) -> float:
+        return self.slope * y_norm + self.intercept
+
+
+@dataclass
+class TrackedStringState:
+    line: NormalizedStringLine
+    missing_frames: int = 0
+
+
+@dataclass(frozen=True)
 class EdgeRefinementResult:
     grid: StableFretboardGrid | None
     fitted_string_indices: tuple[int, ...] = ()
     refined_fret_indices: tuple[int, ...] = ()
+    tracked_string_indices: tuple[int, ...] = ()
+
+
+class StringLineTracker:
+    def __init__(
+        self,
+        detected_alpha: float = STRING_TRACKER_DETECTED_ALPHA,
+        inferred_alpha: float = STRING_TRACKER_INFERRED_ALPHA,
+        outlier_alpha: float = STRING_TRACKER_OUTLIER_ALPHA,
+        outlier_delta_norm: float = STRING_TRACKER_OUTLIER_DELTA_NORM,
+        max_missing_frames: int = STRING_TRACKER_MAX_MISSING_FRAMES,
+    ) -> None:
+        self.detected_alpha = detected_alpha
+        self.inferred_alpha = inferred_alpha
+        self.outlier_alpha = outlier_alpha
+        self.outlier_delta_norm = outlier_delta_norm
+        self.max_missing_frames = max_missing_frames
+        self._states: list[TrackedStringState | None] = [None] * STRING_COUNT
+
+    def clear(self) -> None:
+        self._states = [None] * STRING_COUNT
+
+    def update(
+        self,
+        detected_lines: tuple[FittedCanonicalLine | None, ...],
+        completed_lines: tuple[FittedCanonicalLine | None, ...],
+        canonical: CanonicalFretboard,
+    ) -> tuple[FittedCanonicalLine | None, ...]:
+        tracked_lines: list[FittedCanonicalLine | None] = []
+        for string_index in range(STRING_COUNT):
+            detected_line = line_at_index(detected_lines, string_index)
+            completed_line = line_at_index(completed_lines, string_index)
+            measurement = detected_line if detected_line is not None else completed_line
+            state = self._states[string_index]
+
+            if measurement is None:
+                held_line = self._hold_or_clear(string_index, state, canonical)
+                tracked_lines.append(held_line)
+                continue
+
+            normalized_measurement = normalize_string_line(measurement, canonical)
+            is_detected = detected_line is not None
+            if state is None:
+                next_line = normalized_measurement
+                missing_frames = 0 if is_detected else 1
+            else:
+                alpha = self._alpha_for_measurement(
+                    previous=state.line,
+                    measurement=normalized_measurement,
+                    is_detected=is_detected,
+                )
+                next_line = blend_normalized_lines(state.line, normalized_measurement, alpha)
+                missing_frames = 0 if is_detected else state.missing_frames + 1
+
+            self._states[string_index] = TrackedStringState(
+                line=next_line,
+                missing_frames=missing_frames,
+            )
+            tracked_lines.append(denormalize_string_line(next_line, canonical))
+
+        return tuple(tracked_lines)
+
+    def _hold_or_clear(
+        self,
+        string_index: int,
+        state: TrackedStringState | None,
+        canonical: CanonicalFretboard,
+    ) -> FittedCanonicalLine | None:
+        if state is None:
+            return None
+
+        state.missing_frames += 1
+        if state.missing_frames > self.max_missing_frames:
+            self._states[string_index] = None
+            return None
+
+        return denormalize_string_line(state.line, canonical)
+
+    def _alpha_for_measurement(
+        self,
+        previous: NormalizedStringLine,
+        measurement: NormalizedStringLine,
+        is_detected: bool,
+    ) -> float:
+        if not is_detected:
+            return self.inferred_alpha
+
+        if normalized_line_distance(previous, measurement) > self.outlier_delta_norm:
+            return self.outlier_alpha
+
+        return self.detected_alpha
 
 
 def refine_grid_with_edge_lines(
     frame_bgr: np.ndarray,
     grid: StableFretboardGrid | None,
+    string_tracker: StringLineTracker | None = None,
 ) -> StableFretboardGrid | None:
-    return refine_grid_with_edge_lines_diagnostics(frame_bgr, grid).grid
+    return refine_grid_with_edge_lines_diagnostics(frame_bgr, grid, string_tracker=string_tracker).grid
 
 
 def refine_grid_with_edge_lines_diagnostics(
     frame_bgr: np.ndarray,
     grid: StableFretboardGrid | None,
+    string_tracker: StringLineTracker | None = None,
 ) -> EdgeRefinementResult:
     if grid is None or not grid.ordered_fret_lines:
         return EdgeRefinementResult(grid=grid)
@@ -96,19 +209,29 @@ def refine_grid_with_edge_lines_diagnostics(
         if string_line is not None
     )
     completed_string_lines = complete_string_lines(string_lines, canonical.width)
+    tracked_string_lines = (
+        string_tracker.update(string_lines, completed_string_lines, canonical)
+        if string_tracker is not None
+        else completed_string_lines
+    )
+    tracked_string_indices = tuple(
+        string_index
+        for string_index, string_line in enumerate(tracked_string_lines)
+        if string_line is not None
+    )
     refined_frets, refined_fret_indices = refine_fret_lines_with_support(
         horizontal_strength=horizontal_strength,
         grid=grid,
         canonical=canonical,
     )
 
-    if not fitted_string_indices and not refined_fret_indices:
+    if not fitted_string_indices and not tracked_string_indices and not refined_fret_indices:
         return EdgeRefinementResult(grid=grid)
 
     string_crossings = build_string_crossings_from_refined_lines(
         nut_line=grid.nut_line,
         fret_lines=refined_frets,
-        string_lines=completed_string_lines,
+        string_lines=tracked_string_lines,
         canonical=canonical,
     )
     refined_grid = StableFretboardGrid(
@@ -120,7 +243,64 @@ def refine_grid_with_edge_lines_diagnostics(
         grid=refined_grid,
         fitted_string_indices=fitted_string_indices,
         refined_fret_indices=refined_fret_indices,
+        tracked_string_indices=tracked_string_indices,
     )
+
+
+def line_at_index(
+    lines: tuple[FittedCanonicalLine | None, ...],
+    index: int,
+) -> FittedCanonicalLine | None:
+    if index >= len(lines):
+        return None
+    return lines[index]
+
+
+def normalize_string_line(
+    line: FittedCanonicalLine,
+    canonical: CanonicalFretboard,
+) -> NormalizedStringLine:
+    x_scale = max(float(canonical.width - 1), 1.0)
+    y_scale = max(float(canonical.height - 1), 1.0)
+    return NormalizedStringLine(
+        slope=float(line.slope * y_scale / x_scale),
+        intercept=float(line.intercept / x_scale),
+    )
+
+
+def denormalize_string_line(
+    line: NormalizedStringLine,
+    canonical: CanonicalFretboard,
+) -> FittedCanonicalLine:
+    x_scale = max(float(canonical.width - 1), 1.0)
+    y_scale = max(float(canonical.height - 1), 1.0)
+    return FittedCanonicalLine(
+        slope=float(line.slope * x_scale / y_scale),
+        intercept=float(line.intercept * x_scale),
+        support_count=0,
+        coverage_ratio=0.0,
+    )
+
+
+def blend_normalized_lines(
+    previous: NormalizedStringLine,
+    measurement: NormalizedStringLine,
+    alpha: float,
+) -> NormalizedStringLine:
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    keep = 1.0 - alpha
+    return NormalizedStringLine(
+        slope=previous.slope * keep + measurement.slope * alpha,
+        intercept=previous.intercept * keep + measurement.intercept * alpha,
+    )
+
+
+def normalized_line_distance(
+    first_line: NormalizedStringLine,
+    second_line: NormalizedStringLine,
+) -> float:
+    sample_y = (0.0, 0.5, 1.0)
+    return max(abs(first_line.value_at(y_value) - second_line.value_at(y_value)) for y_value in sample_y)
 
 
 def build_canonical_fretboard(grid: StableFretboardGrid) -> CanonicalFretboard | None:

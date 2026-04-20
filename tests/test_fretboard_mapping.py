@@ -5,7 +5,13 @@ import unittest
 import cv2
 import numpy as np
 
-from fretboard_edge_refinement import refine_grid_with_edge_lines, refine_grid_with_edge_lines_diagnostics
+from fretboard_edge_refinement import (
+    CanonicalFretboard,
+    FittedCanonicalLine,
+    StringLineTracker,
+    refine_grid_with_edge_lines,
+    refine_grid_with_edge_lines_diagnostics,
+)
 from fretboard_mapping import (
     DetectedLine,
     FRETTED_NOTE_ANCHOR_RATIO,
@@ -654,6 +660,81 @@ class FretboardMappingTests(unittest.TestCase):
         fallback_middle_row = grid.string_crossings[2]
         self.assertGreater(middle_row[2][0], fallback_middle_row[2][0] + 4.0)
         self.assertGreater(middle_row[3][0], fallback_middle_row[3][0] + 4.0)
+
+    def test_string_line_tracker_smooths_detected_string_jitter(self) -> None:
+        tracker = StringLineTracker(detected_alpha=0.5, outlier_delta_norm=1.0)
+        canonical = CanonicalFretboard(
+            homography=np.eye(3, dtype=np.float32),
+            inverse_homography=np.eye(3, dtype=np.float32),
+            width=200,
+            height=200,
+        )
+        empty_lines: tuple[FittedCanonicalLine | None, ...] = (None,) * 6
+
+        first_lines = list(empty_lines)
+        first_lines[2] = FittedCanonicalLine(slope=0.0, intercept=80.0, support_count=8, coverage_ratio=0.9)
+        first_tracked = tracker.update(tuple(first_lines), tuple(first_lines), canonical)
+        assert first_tracked[2] is not None
+        self.assertAlmostEqual(first_tracked[2].intercept, 80.0, delta=0.1)
+
+        second_lines = list(empty_lines)
+        second_lines[2] = FittedCanonicalLine(slope=0.0, intercept=92.0, support_count=8, coverage_ratio=0.9)
+        second_tracked = tracker.update(tuple(second_lines), tuple(second_lines), canonical)
+
+        assert second_tracked[2] is not None
+        self.assertGreater(second_tracked[2].intercept, 80.0)
+        self.assertLess(second_tracked[2].intercept, 92.0)
+
+    def test_string_line_tracker_holds_missing_strings_briefly(self) -> None:
+        tracker = StringLineTracker(max_missing_frames=2)
+        canonical = CanonicalFretboard(
+            homography=np.eye(3, dtype=np.float32),
+            inverse_homography=np.eye(3, dtype=np.float32),
+            width=200,
+            height=200,
+        )
+        empty_lines: tuple[FittedCanonicalLine | None, ...] = (None,) * 6
+
+        detected_lines = list(empty_lines)
+        detected_lines[3] = FittedCanonicalLine(slope=0.02, intercept=100.0, support_count=8, coverage_ratio=0.9)
+        tracker.update(tuple(detected_lines), tuple(detected_lines), canonical)
+
+        held_once = tracker.update(empty_lines, empty_lines, canonical)
+        held_twice = tracker.update(empty_lines, empty_lines, canonical)
+        lost_after_limit = tracker.update(empty_lines, empty_lines, canonical)
+
+        self.assertIsNotNone(held_once[3])
+        self.assertIsNotNone(held_twice[3])
+        self.assertIsNone(lost_after_limit[3])
+
+    def test_edge_refinement_uses_tracker_when_strings_temporarily_disappear(self) -> None:
+        frame = np.zeros((180, 140, 3), dtype=np.uint8)
+        grid = build_grid_from_lines(
+            DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
+            [
+                DetectedLine("fret", (10.0, 60.0), (110.0, 60.0), 1.0),
+                DetectedLine("fret", (10.0, 100.0), (110.0, 100.0), 1.0),
+                DetectedLine("fret", (10.0, 140.0), (110.0, 140.0), 1.0),
+            ],
+        )
+        string_x_positions = [18, 34, 51, 69, 86, 103]
+        for x_position in string_x_positions:
+            cv2.line(frame, (x_position, 20), (x_position, 140), (255, 255, 255), 1, cv2.LINE_AA)
+
+        tracker = StringLineTracker()
+        first_result = refine_grid_with_edge_lines_diagnostics(frame, grid, string_tracker=tracker)
+        blank_result = refine_grid_with_edge_lines_diagnostics(np.zeros_like(frame), grid, string_tracker=tracker)
+
+        self.assertEqual(first_result.tracked_string_indices, (0, 1, 2, 3, 4, 5))
+        self.assertEqual(blank_result.tracked_string_indices, (0, 1, 2, 3, 4, 5))
+        self.assertEqual(blank_result.fitted_string_indices, ())
+        assert first_result.grid is not None
+        assert blank_result.grid is not None
+        self.assertAlmostEqual(
+            blank_result.grid.string_crossings[2][3][0],
+            first_result.grid.string_crossings[2][3][0],
+            delta=1.0,
+        )
 
 
 if __name__ == "__main__":
