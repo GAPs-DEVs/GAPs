@@ -32,6 +32,7 @@ from ultralytics import YOLO
 from camera_calibration import CameraCalibration, load_camera_calibration
 from fretboard_edge_refinement import (
     EdgeRefinementResult,
+    FretLineTracker,
     StringLineTracker,
     refine_grid_with_edge_lines_diagnostics,
 )
@@ -70,6 +71,7 @@ FINGERTIP_COLOR = (255, 180, 80)
 EDGE_GUIDE_STRING_COLOR = (80, 255, 120)
 EDGE_GUIDE_INFERRED_STRING_COLOR = (180, 185, 190)
 EDGE_GUIDE_FRET_COLOR = (80, 190, 255)
+EDGE_GUIDE_INFERRED_FRET_COLOR = (165, 175, 185)
 EDGE_GUIDE_INTERSECTION_COLOR = (0, 230, 255)
 OPEN_NOTE_MARKER_RADIUS = 7
 OPEN_NOTE_MARKER_THICKNESS = 2
@@ -373,20 +375,31 @@ def draw_edge_guides(
     fitted_string_indices = set(edge_refinement.fitted_string_indices if edge_refinement is not None else ())
     refined_fret_indices = set(edge_refinement.refined_fret_indices if edge_refinement is not None else ())
     tracked_string_indices = set(edge_refinement.tracked_string_indices if edge_refinement is not None else ())
+    tracked_fret_indices = set(edge_refinement.tracked_fret_indices if edge_refinement is not None else ())
     drawable_string_indices = tracked_string_indices or fitted_string_indices
+    drawable_fret_indices = tracked_fret_indices or refined_fret_indices
 
     if edge_refinement is None:
-        fret_lines_to_draw = stable_grid.ordered_fret_lines
+        fret_indices_to_draw = range(len(stable_grid.ordered_fret_lines))
     else:
-        fret_lines_to_draw = tuple(
-            stable_grid.ordered_fret_lines[fret_index]
-            for fret_index in sorted(refined_fret_indices)
+        fret_indices_to_draw = (
+            fret_index
+            for fret_index in sorted(drawable_fret_indices)
             if 0 <= fret_index < len(stable_grid.ordered_fret_lines)
         )
-    for line in fret_lines_to_draw:
+    for fret_index in fret_indices_to_draw:
+        line = stable_grid.ordered_fret_lines[fret_index]
         p0 = tuple(int(round(value)) for value in line.p0)
         p1 = tuple(int(round(value)) for value in line.p1)
-        cv2.line(annotated, p0, p1, EDGE_GUIDE_FRET_COLOR, 1, cv2.LINE_AA)
+        is_refined_fret = edge_refinement is None or fret_index in refined_fret_indices
+        cv2.line(
+            annotated,
+            p0,
+            p1,
+            EDGE_GUIDE_FRET_COLOR if is_refined_fret else EDGE_GUIDE_INFERRED_FRET_COLOR,
+            2 if is_refined_fret else 1,
+            cv2.LINE_AA,
+        )
 
     for string_index in range(len(stable_grid.string_crossings[0])):
         if edge_refinement is not None and string_index not in drawable_string_indices:
@@ -407,7 +420,7 @@ def draw_edge_guides(
                 cv2.LINE_AA,
             )
 
-    visible_row_indices = {0, *(fret_index + 1 for fret_index in refined_fret_indices)}
+    visible_row_indices = {0, *(fret_index + 1 for fret_index in drawable_fret_indices)}
     for row_index, row in enumerate(stable_grid.string_crossings):
         if edge_refinement is not None and row_index not in visible_row_indices:
             continue
@@ -431,7 +444,8 @@ def filter_note_markers_by_edge_frets(
     if not edge_supported_notes_only or edge_refinement is None:
         return note_markers
 
-    supported_frets = {fret_index + 1 for fret_index in edge_refinement.refined_fret_indices}
+    supported_fret_indices = set(edge_refinement.refined_fret_indices) | set(edge_refinement.tracked_fret_indices)
+    supported_frets = {fret_index + 1 for fret_index in supported_fret_indices}
     return tuple(
         marker
         for marker in note_markers
@@ -453,6 +467,7 @@ def analyze_yolo_frame(
     edge_supported_notes_only: bool = False,
     tracking_mode: str = "yolo_assist",
     string_tracker: StringLineTracker | None = None,
+    fret_tracker: FretLineTracker | None = None,
 ) -> tuple[np.ndarray, FrameAnalysis]:
     detected_lines = predict_detected_lines(
         model=model,
@@ -471,6 +486,7 @@ def analyze_yolo_frame(
         frame_bgr,
         stable_grid,
         string_tracker=string_tracker,
+        fret_tracker=fret_tracker,
     )
     stable_grid = edge_refinement.grid
     if center_test_mode:
@@ -520,6 +536,7 @@ def analyze_selected_lines_frame(
     show_edge_guides: bool = False,
     edge_supported_notes_only: bool = False,
     string_tracker: StringLineTracker | None = None,
+    fret_tracker: FretLineTracker | None = None,
 ) -> tuple[np.ndarray, FrameAnalysis]:
     reference_fret_index = selected_line_tracker.reference_fret_index
     tracking_result = selected_line_tracker.update(
@@ -549,6 +566,7 @@ def analyze_selected_lines_frame(
         frame_bgr,
         tracking_result.stable_grid,
         string_tracker=string_tracker,
+        fret_tracker=fret_tracker,
     )
     stable_grid = edge_refinement.grid
     tracked_lines = tracking_result.tracked_lines
@@ -641,6 +659,7 @@ class VideoWorker(QThread):
         self.note_marker_tracker = NoteMarkerTracker()
         self.selected_line_tracker = SelectedLineTracker(max_history=5)
         self.string_line_tracker = StringLineTracker()
+        self.fret_line_tracker = FretLineTracker()
         self.hand_tracker = MediaPipeHandTracker()
         self.latest_frame_bgr: np.ndarray | None = None
         self.frozen_selection_lines: tuple[DetectedLine, ...] = ()
@@ -683,6 +702,7 @@ class VideoWorker(QThread):
             return False
         self.note_marker_tracker.clear()
         self.string_line_tracker.clear()
+        self.fret_line_tracker.clear()
         self.selection_request = True
         return True
 
@@ -703,6 +723,7 @@ class VideoWorker(QThread):
     def clear_manual_tracking(self) -> None:
         self.selected_line_tracker.clear()
         self.string_line_tracker.clear()
+        self.fret_line_tracker.clear()
         self.note_marker_tracker.clear()
         self.cancel_line_selection()
 
@@ -779,6 +800,7 @@ class VideoWorker(QThread):
                     frame_bgr,
                     stable_grid,
                     string_tracker=self.string_line_tracker,
+                    fret_tracker=self.fret_line_tracker,
                 )
                 stable_grid = edge_refinement.grid
                 if center_test_mode:
@@ -855,6 +877,7 @@ class VideoWorker(QThread):
                     show_edge_guides=show_edge_guides,
                     edge_supported_notes_only=edge_supported_notes_only,
                     string_tracker=self.string_line_tracker,
+                    fret_tracker=self.fret_line_tracker,
                 )
             else:
                 detected_lines = predict_detected_lines(
@@ -874,6 +897,7 @@ class VideoWorker(QThread):
                     frame_bgr,
                     stable_grid,
                     string_tracker=self.string_line_tracker,
+                    fret_tracker=self.fret_line_tracker,
                 )
                 stable_grid = edge_refinement.grid
                 if center_test_mode:

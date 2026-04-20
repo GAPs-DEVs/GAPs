@@ -8,6 +8,7 @@ import numpy as np
 from fretboard_edge_refinement import (
     CanonicalFretboard,
     FittedCanonicalLine,
+    FretLineTracker,
     StringLineTracker,
     refine_grid_with_edge_lines,
     refine_grid_with_edge_lines_diagnostics,
@@ -47,6 +48,16 @@ class FretboardMappingTests(unittest.TestCase):
         self.assertEqual(first[0].point_xy, (100.0, 120.0))
         self.assertLess(second[0].point_xy[0], 104.0)
         self.assertLess(second[0].point_xy[1], 124.0)
+
+    def test_note_marker_tracker_ignores_tiny_position_jitter(self) -> None:
+        tracker = NoteMarkerTracker()
+        tracker.update([NoteMarker(string_index=1, fret_index=3, point_xy=(100.0, 120.0), is_open=False)])
+
+        updated = tracker.update(
+            [NoteMarker(string_index=1, fret_index=3, point_xy=(101.0, 121.0), is_open=False)]
+        )
+
+        self.assertEqual(updated[0].point_xy, (100.0, 120.0))
 
     def test_note_marker_tracker_keeps_marker_identity_separate(self) -> None:
         tracker = NoteMarkerTracker()
@@ -105,7 +116,7 @@ class FretboardMappingTests(unittest.TestCase):
         )
 
         expected_y = 20.0 + (38.0 - 20.0) * FRETTED_NOTE_ANCHOR_RATIO
-        self.assertGreater(FRETTED_NOTE_ANCHOR_RATIO, 0.5)
+        self.assertGreater(FRETTED_NOTE_ANCHOR_RATIO, 0.8)
         self.assertAlmostEqual(d_string_fret_two.point_xy[1], expected_y, places=4)
 
     def test_c_note_maps_to_a_string_third_fret(self) -> None:
@@ -125,6 +136,17 @@ class FretboardMappingTests(unittest.TestCase):
 
         self.assertIn((1, 3), marker_pairs)
         self.assertNotIn((1, 2), marker_pairs)
+
+        a_string_third_fret = next(
+            marker for marker in markers if marker.string_index == 1 and marker.fret_index == 3
+        )
+        second_fret_y = grid.string_crossings[2][1][1]
+        third_fret_y = grid.string_crossings[3][1][1]
+        self.assertGreater(a_string_third_fret.point_xy[1], second_fret_y)
+        self.assertLess(
+            abs(third_fret_y - a_string_third_fret.point_xy[1]),
+            abs(a_string_third_fret.point_xy[1] - second_fret_y),
+        )
 
     def test_build_fretboard_grid_reuses_prior_grid_when_frets_are_fully_occluded(self) -> None:
         prior_grid = build_grid_from_lines(
@@ -707,6 +729,32 @@ class FretboardMappingTests(unittest.TestCase):
         self.assertIsNotNone(held_twice[3])
         self.assertIsNone(lost_after_limit[3])
 
+    def test_fret_line_tracker_keeps_occluded_fret_from_jumping_to_fallback(self) -> None:
+        tracker = FretLineTracker(inferred_alpha=0.1, deadband_norm=0.0)
+        canonical = CanonicalFretboard(
+            homography=np.eye(3, dtype=np.float32),
+            inverse_homography=np.eye(3, dtype=np.float32),
+            width=200,
+            height=200,
+        )
+        detected_frets = (
+            FittedCanonicalLine(slope=0.0, intercept=60.0, support_count=8, coverage_ratio=0.9),
+            FittedCanonicalLine(slope=0.0, intercept=100.0, support_count=8, coverage_ratio=0.9),
+            FittedCanonicalLine(slope=0.0, intercept=140.0, support_count=8, coverage_ratio=0.9),
+        )
+        tracker.update(detected_frets, detected_frets, canonical)
+
+        fallback_frets = (
+            detected_frets[0],
+            FittedCanonicalLine(slope=0.0, intercept=112.0, support_count=0, coverage_ratio=0.0),
+            detected_frets[2],
+        )
+        tracked = tracker.update((None, None, None), fallback_frets, canonical)
+
+        assert tracked[1] is not None
+        self.assertGreater(tracked[1].intercept, 100.0)
+        self.assertLess(tracked[1].intercept, 104.0)
+
     def test_edge_refinement_uses_tracker_when_strings_temporarily_disappear(self) -> None:
         frame = np.zeros((180, 140, 3), dtype=np.uint8)
         grid = build_grid_from_lines(
@@ -735,6 +783,44 @@ class FretboardMappingTests(unittest.TestCase):
             first_result.grid.string_crossings[2][3][0],
             delta=1.0,
         )
+
+    def test_edge_refinement_uses_fret_tracker_when_fret_is_temporarily_occluded(self) -> None:
+        frame = np.zeros((180, 140, 3), dtype=np.uint8)
+        grid = build_grid_from_lines(
+            DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
+            [
+                DetectedLine("fret", (10.0, 60.0), (110.0, 60.0), 1.0),
+                DetectedLine("fret", (10.0, 100.0), (110.0, 100.0), 1.0),
+                DetectedLine("fret", (10.0, 140.0), (110.0, 140.0), 1.0),
+            ],
+        )
+        for y_position in (60, 100, 140):
+            cv2.line(frame, (10, y_position), (110, y_position), (220, 220, 220), 1, cv2.LINE_AA)
+
+        shifted_middle_grid = build_grid_from_lines(
+            DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
+            [
+                DetectedLine("fret", (10.0, 60.0), (110.0, 60.0), 1.0),
+                DetectedLine("fret", (10.0, 112.0), (110.0, 112.0), 1.0),
+                DetectedLine("fret", (10.0, 140.0), (110.0, 140.0), 1.0),
+            ],
+        )
+
+        tracker = FretLineTracker(inferred_alpha=0.1, deadband_norm=0.0)
+        first_result = refine_grid_with_edge_lines_diagnostics(frame, grid, fret_tracker=tracker)
+        blank_result = refine_grid_with_edge_lines_diagnostics(
+            np.zeros_like(frame),
+            shifted_middle_grid,
+            fret_tracker=tracker,
+        )
+
+        self.assertIn(1, first_result.refined_fret_indices)
+        self.assertEqual(blank_result.refined_fret_indices, ())
+        self.assertIn(1, blank_result.tracked_fret_indices)
+        assert blank_result.grid is not None
+        tracked_middle_y = blank_result.grid.ordered_fret_lines[1].p0[1]
+        self.assertGreater(tracked_middle_y, 100.0)
+        self.assertLess(tracked_middle_y, 104.0)
 
 
 if __name__ == "__main__":

@@ -9,11 +9,12 @@ import numpy as np
 
 STRING_COUNT = 6
 PLAYABLE_EDGE_MARGIN_RATIO = 0.12
-FRETTED_NOTE_ANCHOR_RATIO = 0.72
-NOTE_MARKER_STABLE_ALPHA = 0.32
-NOTE_MARKER_FAST_ALPHA = 0.58
-NOTE_MARKER_FAST_MOVE_PX = 18.0
-NOTE_MARKER_KEEP_MISSING_FRAMES = 4
+FRETTED_NOTE_ANCHOR_RATIO = 0.88
+NOTE_MARKER_STABLE_ALPHA = 0.16
+NOTE_MARKER_FAST_ALPHA = 0.42
+NOTE_MARKER_FAST_MOVE_PX = 28.0
+NOTE_MARKER_DEADBAND_PX = 3.0
+NOTE_MARKER_KEEP_MISSING_FRAMES = 8
 STANDARD_TUNING_MIDI = (40, 45, 50, 55, 59, 64)  # E2, A2, D3, G3, B3, E4
 NOTE_NAME_TO_PITCH_CLASS = {
     "도": 0,
@@ -97,11 +98,13 @@ class NoteMarkerTracker:
         stable_alpha: float = NOTE_MARKER_STABLE_ALPHA,
         fast_alpha: float = NOTE_MARKER_FAST_ALPHA,
         fast_move_px: float = NOTE_MARKER_FAST_MOVE_PX,
+        deadband_px: float = NOTE_MARKER_DEADBAND_PX,
         keep_missing_frames: int = NOTE_MARKER_KEEP_MISSING_FRAMES,
     ) -> None:
         self.stable_alpha = stable_alpha
         self.fast_alpha = fast_alpha
         self.fast_move_px = fast_move_px
+        self.deadband_px = deadband_px
         self.keep_missing_frames = keep_missing_frames
         self._states: dict[tuple[int, int, bool], TrackedMarkerState] = {}
 
@@ -127,8 +130,11 @@ class NoteMarkerTracker:
             else:
                 previous_point = point_array(previous_state.point_xy)
                 delta = float(np.linalg.norm(current_point - previous_point))
-                alpha = self.fast_alpha if delta >= self.fast_move_px else self.stable_alpha
-                smoothed_point = interpolate_points(previous_point, current_point, alpha)
+                if delta <= self.deadband_px:
+                    smoothed_point = previous_point
+                else:
+                    alpha = self.fast_alpha if delta >= self.fast_move_px else self.stable_alpha
+                    smoothed_point = interpolate_points(previous_point, current_point, alpha)
 
             smoothed_point_xy = point_tuple(smoothed_point)
             next_states[key] = TrackedMarkerState(point_xy=smoothed_point_xy, missing_frames=0)
