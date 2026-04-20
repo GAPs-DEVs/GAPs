@@ -1206,7 +1206,6 @@ class MainWindow(QMainWindow):
         self.center_test_checkbox = QCheckBox("중앙 테스트 점")
         self.center_test_checkbox.stateChanged.connect(self.handle_center_test_change)
         self.edge_guides_checkbox = QCheckBox("줄/교차점 표시")
-        self.edge_guides_checkbox.setChecked(True)
         self.edge_guides_checkbox.stateChanged.connect(self.handle_edge_guides_change)
         self.edge_supported_notes_checkbox = QCheckBox("검출 프렛만 후보")
         self.edge_supported_notes_checkbox.stateChanged.connect(self.handle_edge_supported_notes_change)
