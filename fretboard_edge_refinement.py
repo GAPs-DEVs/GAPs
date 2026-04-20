@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 import cv2
@@ -222,19 +223,31 @@ class FretLineTracker:
     def clear(self) -> None:
         self._states.clear()
 
+    def clear_indices(self, fret_indices: Collection[int]) -> None:
+        for fret_index in fret_indices:
+            if 0 <= fret_index < len(self._states):
+                self._states[fret_index] = None
+
     def update(
         self,
         detected_lines: tuple[FittedCanonicalLine | None, ...],
         fallback_lines: tuple[FittedCanonicalLine | None, ...],
         canonical: CanonicalFretboard,
+        suppressed_fret_indices: Collection[int] | None = None,
     ) -> tuple[FittedCanonicalLine | None, ...]:
         fret_count = max(len(detected_lines), len(fallback_lines))
         self._resize(fret_count)
+        suppressed_indices = set(suppressed_fret_indices or ())
 
         tracked_lines: list[FittedCanonicalLine | None] = []
         for fret_index in range(fret_count):
             detected_line = line_at_index(detected_lines, fret_index)
             fallback_line = line_at_index(fallback_lines, fret_index)
+            if fret_index in suppressed_indices:
+                self._states[fret_index] = None
+                tracked_lines.append(fallback_line)
+                continue
+
             measurement = detected_line if detected_line is not None else fallback_line
             state = self._states[fret_index]
 
@@ -321,12 +334,14 @@ def refine_grid_with_edge_lines(
     grid: StableFretboardGrid | None,
     string_tracker: StringLineTracker | None = None,
     fret_tracker: FretLineTracker | None = None,
+    suppressed_fret_indices: Collection[int] | None = None,
 ) -> StableFretboardGrid | None:
     return refine_grid_with_edge_lines_diagnostics(
         frame_bgr,
         grid,
         string_tracker=string_tracker,
         fret_tracker=fret_tracker,
+        suppressed_fret_indices=suppressed_fret_indices,
     ).grid
 
 
@@ -335,6 +350,7 @@ def refine_grid_with_edge_lines_diagnostics(
     grid: StableFretboardGrid | None,
     string_tracker: StringLineTracker | None = None,
     fret_tracker: FretLineTracker | None = None,
+    suppressed_fret_indices: Collection[int] | None = None,
 ) -> EdgeRefinementResult:
     if grid is None or not grid.ordered_fret_lines:
         return EdgeRefinementResult(grid=grid)
@@ -376,10 +392,31 @@ def refine_grid_with_edge_lines_diagnostics(
         grid=grid,
         canonical=canonical,
     )
+    suppressed_indices = valid_fret_indices(
+        suppressed_fret_indices,
+        len(grid.ordered_fret_lines),
+    )
+    if suppressed_indices:
+        fitted_fret_lines = tuple(
+            None if fret_index in suppressed_indices else fitted_line
+            for fret_index, fitted_line in enumerate(fitted_fret_lines)
+        )
+        refined_fret_indices = tuple(
+            fret_index for fret_index in refined_fret_indices if fret_index not in suppressed_indices
+        )
     fallback_fret_lines = canonical_y_fits_from_grid_frets(grid, canonical)
     if fret_tracker is not None:
-        tracked_fret_lines = fret_tracker.update(fitted_fret_lines, fallback_fret_lines, canonical)
-        tracked_fret_indices = fret_tracker.confirmed_indices(len(tracked_fret_lines))
+        tracked_fret_lines = fret_tracker.update(
+            fitted_fret_lines,
+            fallback_fret_lines,
+            canonical,
+            suppressed_fret_indices=suppressed_indices,
+        )
+        tracked_fret_indices = tuple(
+            fret_index
+            for fret_index in fret_tracker.confirmed_indices(len(tracked_fret_lines))
+            if fret_index not in suppressed_indices
+        )
     else:
         tracked_fret_lines = merge_detected_and_fallback_lines(fitted_fret_lines, fallback_fret_lines)
         tracked_fret_indices = ()
@@ -415,6 +452,19 @@ def refine_grid_with_edge_lines_diagnostics(
         tracked_string_indices=tracked_string_indices,
         tracked_fret_indices=tracked_fret_indices,
     )
+
+
+def valid_fret_indices(
+    fret_indices: Collection[int] | None,
+    fret_count: int,
+) -> set[int]:
+    if fret_indices is None:
+        return set()
+    return {
+        int(fret_index)
+        for fret_index in fret_indices
+        if 0 <= int(fret_index) < fret_count
+    }
 
 
 def line_at_index(

@@ -1752,6 +1752,43 @@ def build_note_markers(
     return tuple(markers)
 
 
+def suppress_fret_indices_from_grid(
+    grid: StableFretboardGrid | None,
+    suppressed_fret_indices: Iterable[int] | None,
+) -> StableFretboardGrid | None:
+    if grid is None:
+        return None
+
+    suppressed_indices = {
+        int(fret_index)
+        for fret_index in suppressed_fret_indices or ()
+        if 0 <= int(fret_index) < len(grid.ordered_fret_lines)
+    }
+    if not suppressed_indices:
+        return grid
+
+    kept_fret_lines: list[DetectedLine] = []
+    kept_crossing_rows: list[tuple[tuple[float, float], ...]] = [
+        grid.string_crossings[0] if grid.string_crossings else compute_string_crossings(grid.nut_line)
+    ]
+    for fret_index, fret_line in enumerate(grid.ordered_fret_lines):
+        if fret_index in suppressed_indices:
+            continue
+
+        kept_fret_lines.append(fret_line)
+        crossing_row_index = fret_index + 1
+        if crossing_row_index < len(grid.string_crossings):
+            kept_crossing_rows.append(grid.string_crossings[crossing_row_index])
+        else:
+            kept_crossing_rows.append(compute_string_crossings(fret_line))
+
+    return StableFretboardGrid(
+        nut_line=grid.nut_line,
+        ordered_fret_lines=tuple(kept_fret_lines),
+        string_crossings=tuple(kept_crossing_rows),
+    )
+
+
 def build_center_test_note_markers(
     grid: StableFretboardGrid | None,
     selected_note: str | None,

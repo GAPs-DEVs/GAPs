@@ -28,6 +28,7 @@ from fretboard_mapping import (
     build_note_markers,
     infer_selected_reference_fret_index,
     scale_length_ratio,
+    suppress_fret_indices_from_grid,
 )
 
 
@@ -116,7 +117,7 @@ class FretboardMappingTests(unittest.TestCase):
         )
 
         expected_y = 20.0 + (38.0 - 20.0) * FRETTED_NOTE_ANCHOR_RATIO
-        self.assertGreater(FRETTED_NOTE_ANCHOR_RATIO, 0.8)
+        self.assertAlmostEqual(FRETTED_NOTE_ANCHOR_RATIO, 0.5)
         self.assertAlmostEqual(d_string_fret_two.point_xy[1], expected_y, places=4)
 
     def test_c_note_maps_to_a_string_third_fret(self) -> None:
@@ -142,11 +143,30 @@ class FretboardMappingTests(unittest.TestCase):
         )
         second_fret_y = grid.string_crossings[2][1][1]
         third_fret_y = grid.string_crossings[3][1][1]
-        self.assertGreater(a_string_third_fret.point_xy[1], second_fret_y)
-        self.assertLess(
-            abs(third_fret_y - a_string_third_fret.point_xy[1]),
-            abs(a_string_third_fret.point_xy[1] - second_fret_y),
+        expected_y = second_fret_y + (third_fret_y - second_fret_y) * FRETTED_NOTE_ANCHOR_RATIO
+        self.assertAlmostEqual(a_string_third_fret.point_xy[1], expected_y, places=4)
+
+    def test_suppressed_false_fret_reindexes_note_marker_positions(self) -> None:
+        grid = build_grid_from_lines(
+            make_line("nut", 0.0),
+            [
+                make_line("fret", 20.0),
+                make_line("fret", 30.0),
+                make_line("fret", 38.0),
+                make_line("fret", 54.0),
+            ],
         )
+
+        effective_grid = suppress_fret_indices_from_grid(grid, {1})
+        markers = build_note_markers(effective_grid, "도")
+        a_string_third_fret = next(
+            marker for marker in markers if marker.string_index == 1 and marker.fret_index == 3
+        )
+
+        assert effective_grid is not None
+        self.assertEqual(len(effective_grid.ordered_fret_lines), 3)
+        expected_y = 38.0 + (54.0 - 38.0) * FRETTED_NOTE_ANCHOR_RATIO
+        self.assertAlmostEqual(a_string_third_fret.point_xy[1], expected_y, places=4)
 
     def test_build_fretboard_grid_reuses_prior_grid_when_frets_are_fully_occluded(self) -> None:
         prior_grid = build_grid_from_lines(
@@ -657,6 +677,34 @@ class FretboardMappingTests(unittest.TestCase):
         self.assertIn(0, result.refined_fret_indices)
         self.assertIn(2, result.refined_fret_indices)
         self.assertNotIn(1, result.refined_fret_indices)
+
+    def test_edge_refinement_suppressed_fret_falls_back_to_original_grid_line(self) -> None:
+        frame = np.zeros((180, 140, 3), dtype=np.uint8)
+        grid = build_grid_from_lines(
+            DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
+            [
+                DetectedLine("fret", (10.0, 60.0), (110.0, 60.0), 1.0),
+                DetectedLine("fret", (10.0, 100.0), (110.0, 100.0), 1.0),
+                DetectedLine("fret", (10.0, 140.0), (110.0, 140.0), 1.0),
+            ],
+        )
+        cv2.line(frame, (10, 60), (110, 60), (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.line(frame, (10, 112), (110, 112), (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.line(frame, (10, 140), (110, 140), (220, 220, 220), 1, cv2.LINE_AA)
+
+        unsuppressed = refine_grid_with_edge_lines_diagnostics(frame, grid)
+        suppressed = refine_grid_with_edge_lines_diagnostics(
+            frame,
+            grid,
+            suppressed_fret_indices={1},
+        )
+
+        assert unsuppressed.grid is not None
+        assert suppressed.grid is not None
+        self.assertIn(1, unsuppressed.refined_fret_indices)
+        self.assertNotIn(1, suppressed.refined_fret_indices)
+        self.assertGreater(unsuppressed.grid.ordered_fret_lines[1].p0[1], 106.0)
+        self.assertAlmostEqual(suppressed.grid.ordered_fret_lines[1].p0[1], 100.0, delta=1.0)
 
     def test_edge_refinement_infers_missing_strings_from_partial_detections(self) -> None:
         frame = np.zeros((220, 380, 3), dtype=np.uint8)
