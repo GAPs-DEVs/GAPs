@@ -5,10 +5,12 @@ description = "Desktop guitar fretboard detector built with PySide6, YOLO, and M
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "librosa>=0.11",
     "mediapipe>=0.10",
     "numpy>=2.0",
     "opencv-python>=4.10",
     "PySide6>=6.7",
+    "sounddevice>=0.5",
     "ultralytics>=8.3",
 ]
 
