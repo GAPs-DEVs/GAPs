@@ -50,13 +50,13 @@ class ChordJudgeWidget(QWidget):
     def __init__(
         self,
         expected_notes: list[str] | None = None,
-        tolerance_cents: float = 50.0,
+        tolerance_cents: float = 35.0,
         sample_rate: int = 44100,
         block_size: int = 2048,
         analysis_window_ms: int = 650,
         silence_threshold: float = 0.006,
         update_interval_ms: int = 120,
-        result_hold_ms: int = 1000,
+        result_hold_ms: int = 600,
         device: int | str | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -237,6 +237,7 @@ class ChordJudgeWidget(QWidget):
             "matches": [],
             "matched_notes": [],
             "missing_notes": [note.name for note in expected],
+            "rejected_notes": [],
             "rms": 0.0,
             "peak": 0.0,
             "noise_floor_db": -120.0,
@@ -263,4 +264,3 @@ if __name__ == "__main__":
     widget.resize(480, 320)
     widget.show()
     sys.exit(app.exec())
-

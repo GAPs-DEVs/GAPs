@@ -4,6 +4,7 @@ import math
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import replace
 
 import numpy as np
 
@@ -24,6 +25,7 @@ class PolyphonicNoteMatch:
     cents_difference: float | None
     energy_db: float
     is_present: bool
+    rejection_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,10 +43,11 @@ def detect_expected_frequencies_cqt(
     samples: np.ndarray,
     sample_rate: int,
     expected_frequencies: Sequence[ExpectedFrequency],
-    tolerance_cents: float = 50.0,
+    tolerance_cents: float = 35.0,
     silence_threshold: float = 0.006,
-    relative_threshold_db: float = -38.0,
-    floor_margin_db: float = 6.0,
+    relative_threshold_db: float = -30.0,
+    floor_margin_db: float = 10.0,
+    harmonic_rejection_margin_db: float = 18.0,
     bins_per_octave: int = 36,
 ) -> PolyphonicDetectionResult:
     """Detect whether expected frequencies are present using librosa CQT energy.
@@ -72,6 +75,7 @@ def detect_expected_frequencies_cqt(
             cents_difference=None,
             energy_db=-120.0,
             is_present=False,
+            rejection_reason="",
         )
         for expected in expected_frequencies
     )
@@ -138,6 +142,11 @@ def detect_expected_frequencies_cqt(
         )
         for expected in expected_frequencies
     )
+    matches = _reject_probable_harmonic_matches(
+        matches,
+        tolerance_cents=tolerance_cents,
+        harmonic_rejection_margin_db=harmonic_rejection_margin_db,
+    )
     is_correct = all(match.is_present for match in matches)
     return PolyphonicDetectionResult(
         matches=matches,
@@ -180,3 +189,49 @@ def _match_expected_frequency(
         energy_db=best_energy_db,
         is_present=is_present,
     )
+
+
+def _reject_probable_harmonic_matches(
+    matches: tuple[PolyphonicNoteMatch, ...],
+    tolerance_cents: float,
+    harmonic_rejection_margin_db: float,
+    max_harmonic: int = 8,
+) -> tuple[PolyphonicNoteMatch, ...]:
+    if harmonic_rejection_margin_db <= 0:
+        return matches
+
+    guarded_matches: list[PolyphonicNoteMatch] = []
+    for match in matches:
+        if not match.is_present:
+            guarded_matches.append(match)
+            continue
+
+        rejection_reason = ""
+        for lower_match in matches:
+            if lower_match is match or not lower_match.is_present:
+                continue
+            if lower_match.expected_frequency >= match.expected_frequency:
+                continue
+
+            ratio = match.expected_frequency / lower_match.expected_frequency
+            nearest_harmonic = int(round(ratio))
+            if nearest_harmonic < 2 or nearest_harmonic > max_harmonic:
+                continue
+
+            harmonic_cents = 1200.0 * math.log2(ratio / nearest_harmonic)
+            if abs(harmonic_cents) > tolerance_cents:
+                continue
+
+            energy_gap_db = lower_match.energy_db - match.energy_db
+            if energy_gap_db > harmonic_rejection_margin_db:
+                rejection_reason = f"probable_harmonic_of:{lower_match.name}"
+                break
+
+        if rejection_reason:
+            guarded_matches.append(
+                replace(match, is_present=False, rejection_reason=rejection_reason)
+            )
+        else:
+            guarded_matches.append(match)
+
+    return tuple(guarded_matches)

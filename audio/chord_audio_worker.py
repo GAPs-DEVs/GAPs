@@ -19,10 +19,10 @@ class ChordAudioWorker(QThread):
         sample_rate: int = 44100,
         block_size: int = 2048,
         analysis_window_ms: int = 650,
-        tolerance_cents: float = 50.0,
+        tolerance_cents: float = 35.0,
         silence_threshold: float = 0.006,
         update_interval_ms: int = 120,
-        result_hold_ms: int = 1000,
+        result_hold_ms: int = 600,
         device: int | str | None = None,
         parent: QObject | None = None,
     ) -> None:
@@ -150,6 +150,7 @@ class ChordAudioWorker(QThread):
             "matches": [],
             "matched_notes": [],
             "missing_notes": [expected.name for expected in self.expected_frequencies],
+            "rejected_notes": [],
             "rms": 0.0,
             "peak": 0.0,
             "noise_floor_db": -120.0,
@@ -173,6 +174,7 @@ class ChordAudioWorker(QThread):
                 "cents_difference": match.cents_difference,
                 "energy_db": match.energy_db,
                 "is_present": match.is_present,
+                "rejection_reason": match.rejection_reason,
             }
             for match in detection.matches
         ]
@@ -182,6 +184,9 @@ class ChordAudioWorker(QThread):
             "matches": matches,
             "matched_notes": [match["name"] for match in matches if match["is_present"]],
             "missing_notes": [match["name"] for match in matches if not match["is_present"]],
+            "rejected_notes": [
+                match["name"] for match in matches if match["rejection_reason"]
+            ],
             "rms": detection.rms,
             "peak": detection.peak,
             "noise_floor_db": detection.noise_floor_db,
@@ -195,4 +200,3 @@ class ChordAudioWorker(QThread):
                 for expected in self.expected_frequencies
             ],
         }
-
