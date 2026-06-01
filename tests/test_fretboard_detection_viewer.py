@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from fretboard_edge_refinement import EdgeRefinementResult
-from fretboard_mapping import DetectedLine, FRETTED_NOTE_ANCHOR_RATIO, NoteMarker, build_grid_from_lines
-from pyside_fretboard_detector import filter_note_markers_by_edge_frets
+from tools.fretboard_detection_viewer import filter_note_markers_by_edge_frets
+from vision.fretboard_edge_refinement import EdgeRefinementResult
+from vision.fretboard_mapping import DetectedLine, FRETTED_NOTE_ANCHOR_RATIO, NoteMarker, build_grid_from_lines
 
 
 def make_line(kind: str, y: float, confidence: float = 0.9) -> DetectedLine:

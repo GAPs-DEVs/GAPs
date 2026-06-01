@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from fretboard_edge_refinement import (
+from vision.fretboard_edge_refinement import (
     build_canonical_fretboard,
     fit_string_lines,
     image_line_from_canonical_x_fit,
@@ -15,7 +15,7 @@ from fretboard_edge_refinement import (
     refine_fret_lines,
     refine_grid_with_edge_lines,
 )
-from fretboard_mapping import (
+from vision.fretboard_mapping import (
     DetectedLine,
     StableFretboardGrid,
     build_grid_from_lines,

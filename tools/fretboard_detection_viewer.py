@@ -30,13 +30,13 @@ from PySide6.QtWidgets import (
 )
 from ultralytics import YOLO
 
-from camera_calibration import CameraCalibration, load_camera_calibration
-from fretboard_edge_refinement import (
+from vision.camera_calibration import CameraCalibration, load_camera_calibration
+from vision.fretboard_edge_refinement import (
     EdgeRefinementResult,
     StringLineTracker,
     refine_grid_with_edge_lines_diagnostics,
 )
-from fretboard_mapping import (
+from vision.fretboard_mapping import (
     DetectedLine,
     FRETTED_NOTE_ANCHOR_RATIO,
     FretboardTracker,
@@ -57,11 +57,12 @@ from fretboard_mapping import (
     point_tuple,
     suppress_fret_indices_from_grid,
 )
-from hand_tracking import Fingertip, MediaPipeHandTracker
+from vision.hand_tracking import Fingertip, MediaPipeHandTracker
 
 
-DEFAULT_MODEL_PATH = Path(__file__).with_name("best06.pt")
-DEFAULT_CALIBRATION_PATH = Path(__file__).with_name("camera_calibration.npz")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "best06.pt"
+DEFAULT_CALIBRATION_PATH = PROJECT_ROOT / "camera_calibration.npz"
 NOTE_CHOICES = ["없음", "도", "레", "미", "파", "솔", "라", "시", "높은 도"]
 POINT_THRESHOLD = 0.15
 SELECTION_MAX_DISTANCE = 30.0
@@ -1862,7 +1863,7 @@ class MainWindow(QMainWindow):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PySide webcam viewer for guitar fretboard YOLO detection")
+    parser = argparse.ArgumentParser(description="PySide test viewer for guitar fretboard YOLO detection")
     parser.add_argument("--model", type=str, default=None, help="Path to the YOLO weight file")
     parser.add_argument("--camera", type=int, default=0, help="Webcam index to open first")
     parser.add_argument(

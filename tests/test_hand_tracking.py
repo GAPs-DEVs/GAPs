@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from fretboard_mapping import NoteMarker
-from hand_tracking import Fingertip, estimate_marker_match_radius, match_fingertips_to_markers
+from vision.fretboard_mapping import NoteMarker
+from vision.hand_tracking import Fingertip, estimate_marker_match_radius, match_fingertips_to_markers
 
 
 class HandTrackingTests(unittest.TestCase):
