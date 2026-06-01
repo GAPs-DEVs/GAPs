@@ -5,7 +5,7 @@ import unittest
 import cv2
 import numpy as np
 
-from fretboard_edge_refinement import (
+from vision.fretboard_edge_refinement import (
     CanonicalFretboard,
     FittedCanonicalLine,
     StringLineTracker,
@@ -14,7 +14,7 @@ from fretboard_edge_refinement import (
     refine_grid_with_edge_lines,
     refine_grid_with_edge_lines_diagnostics,
 )
-from fretboard_mapping import (
+from vision.fretboard_mapping import (
     DetectedLine,
     FRETTED_NOTE_ANCHOR_RATIO,
     FretboardTracker,

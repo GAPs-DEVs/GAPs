@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from fretboard_mapping import (
+from vision.fretboard_mapping import (
     PLAYABLE_EDGE_MARGIN_RATIO,
     STRING_COUNT,
     DetectedLine,

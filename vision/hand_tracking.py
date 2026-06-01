@@ -6,14 +6,14 @@ from typing import Sequence
 
 import numpy as np
 
-from fretboard_mapping import NoteMarker
+from vision.fretboard_mapping import NoteMarker
 
 
 DEFAULT_MATCH_RADIUS_PX = 22.0
 MIN_MATCH_RADIUS_PX = 14.0
 MAX_MATCH_RADIUS_PX = 34.0
 FINGERTIP_LANDMARK_IDS = (4, 8, 12, 16, 20)
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "models" / "hand_landmarker.task"
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "hand_landmarker.task"
 
 
 @dataclass(frozen=True)

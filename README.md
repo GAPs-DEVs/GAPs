@@ -1,6 +1,6 @@
-# Guitar Fretboard PySide Detector
+# Guitar Fretboard Detection Viewer
 
-`best06.pt` 가중치를 사용해서 웹캠 영상 위에 기타 지판 관련 검출 결과를 그려주는 `PySide6` 데스크톱 앱입니다.
+`models/best06.pt` 가중치를 사용해서 웹캠 영상 위에 기타 지판 프렛 검출 결과를 확인하는 `PySide6` 테스트/디버그 도구입니다.
 
 ## 설치
 
@@ -13,19 +13,19 @@ uv sync --frozen
 ## 실행
 
 ```bash
-uv run python pyside_fretboard_detector.py
+uv run python -m tools.fretboard_detection_viewer
 ```
 
 다른 가중치를 쓰고 싶으면:
 
 ```bash
-uv run python pyside_fretboard_detector.py --model /absolute/path/to/model.pt --camera 0
+uv run python -m tools.fretboard_detection_viewer --model /absolute/path/to/model.pt --camera 0
 ```
 
 카메라 보정 파일이 있으면:
 
 ```bash
-uv run python pyside_fretboard_detector.py --camera-calibration /absolute/path/to/camera_calibration.npz
+uv run python -m tools.fretboard_detection_viewer --camera-calibration /absolute/path/to/camera_calibration.npz
 ```
 
 ## 테스트
@@ -49,7 +49,7 @@ uv run pytest
 - 자동 모드도 visible fret 여러 개를 실제 프렛선 기준으로 유지하면서 note 좌표를 안정화
 - 음 선택 `없음, 도, 레, 미, 파, 솔, 라, 시, 높은 도`
 - `중앙 테스트 점` 토글을 켜면 선택한 음을 지판 중앙선 위 단일 점으로 표시
-- `MediaPipe` 손끝 검출을 별도 모듈([hand_tracking.py](/Users/kjw/Desktop/01.Project/capstone/guitar_fret_test/hand_tracking.py))로 분리
+- `MediaPipe` 손끝 검출을 별도 모듈([vision/hand_tracking.py](vision/hand_tracking.py))로 분리
 - 손끝이 음 점 반경 안에 들어오면 정확 운지로 판단하고 해당 점 색상을 변경
 - 표준튜닝(EADGBE) 기준으로 선택 음의 모든 가시 후보 위치 점 표시
 - `현 방향 반전` 토글로 1번줄/6번줄 방향 보정
@@ -62,9 +62,10 @@ uv run pytest
 - macOS에서는 처음 실행 시 카메라 권한 허용이 필요할 수 있습니다.
 - Python 버전과 잠금된 의존성은 `pyproject.toml`, `uv.lock` 기준으로 관리합니다.
 - 현재 모델은 `PoseModel`로 인식되며, 각 검출 결과에 2개의 키포인트를 함께 그리도록 구성했습니다.
-- 손끝 검출은 `mediapipe`가 설치된 경우 자동 활성화됩니다. 설치되지 않으면 앱은 계속 동작하지만 손 검출만 비활성화됩니다.
-- 손 landmark 모델은 프로젝트의 [models/hand_landmarker.task](/Users/kjw/Desktop/01.Project/capstone/guitar_fret_test/models/hand_landmarker.task) 를 사용합니다.
-- 음 위치 점은 안정화된 `nut/fret` 기준으로 계산하고, 운지 위치는 해당 프렛선 바로 뒤쪽에 표시합니다.
+- 손끝 검출은 `mediapipe`가 설치된 경우 자동 활성화됩니다. 설치되지 않으면 도구는 계속 동작하지만 손 검출만 비활성화됩니다.
+- 손 landmark 모델은 프로젝트의 [models/hand_landmarker.task](models/hand_landmarker.task) 를 사용합니다.
+- YOLO 모델은 기본적으로 [models/best06.pt](models/best06.pt) 를 사용합니다.
+- 음 위치 점은 현재 프레임에서 확정된 인접 `nut/fret` 경계의 중앙에 표시합니다.
 - calibration 파일은 `npz` 형식이며 `camera_matrix`, `dist_coeffs`, `image_size` 키를 권장합니다.
 - 수동 선택 순서는 `Select Nut + Last Visible Fret` 클릭 후 `nut 선 클릭 -> 현재 보이는 마지막 프렛 선 클릭` 입니다.
 - `Last Visible Fret #` 값은 사용자가 클릭한 마지막 가시 프렛 위치를 바탕으로 자동 계산되며, 점이 밀리면 직접 수정할 수 있습니다.

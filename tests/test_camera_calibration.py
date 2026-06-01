@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from camera_calibration import CameraCalibration, load_camera_calibration
+from vision.camera_calibration import CameraCalibration, load_camera_calibration
 
 
 class CameraCalibrationTests(unittest.TestCase):
