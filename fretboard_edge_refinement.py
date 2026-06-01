@@ -14,7 +14,9 @@ from fretboard_mapping import (
     compute_string_crossings,
     intersect_infinite_lines,
     line_length,
+    line_midpoint,
     line_vector,
+    neck_direction_from_pair,
     normalize,
     orient_line_for_screen,
     orient_line_like_reference,
@@ -31,20 +33,25 @@ STRING_SEARCH_RADIUS_RATIO = 0.07
 FRET_SEARCH_RADIUS_RATIO = 0.35
 EDGE_BIN_TARGET_PX = 18
 MIN_STRING_SUPPORT_POINTS = 5
-MIN_FRET_SUPPORT_POINTS = 4
+MIN_FRET_SUPPORT_POINTS = 6
+FRET_FALLBACK_MIN_SUPPORT_POINTS = 5
 MIN_PEAK_ABSOLUTE_STRENGTH = 0.035
+FRET_MIN_COVERAGE_RATIO = 0.42
+FRET_FALLBACK_MIN_COVERAGE_RATIO = 0.58
+RIDGE_STRENGTH_WEIGHT = 0.74
+EDGE_STRENGTH_WEIGHT = 0.58
 STRING_TRACKER_DETECTED_ALPHA = 0.44
 STRING_TRACKER_INFERRED_ALPHA = 0.10
 STRING_TRACKER_OUTLIER_ALPHA = 0.05
 STRING_TRACKER_DEADBAND_NORM = 0.006
 STRING_TRACKER_OUTLIER_DELTA_NORM = 0.085
 STRING_TRACKER_MAX_MISSING_FRAMES = 16
-FRET_TRACKER_DETECTED_ALPHA = 0.48
-FRET_TRACKER_INFERRED_ALPHA = 0.10
-FRET_TRACKER_OUTLIER_ALPHA = 0.06
-FRET_TRACKER_DEADBAND_NORM = 0.005
-FRET_TRACKER_OUTLIER_DELTA_NORM = 0.065
-FRET_TRACKER_MAX_MISSING_FRAMES = 18
+YOLO_FRET_DUPLICATE_DISTANCE_PX = 2.5
+YOLO_FRET_DUPLICATE_MAX_DISTANCE_PX = 5.0
+YOLO_FRET_DUPLICATE_GAP_RATIO = 0.28
+YOLO_FRET_DUPLICATE_MIN_DIRECTION_SIMILARITY = 0.992
+YOLO_NUT_FRET_DUPLICATE_DISTANCE_PX = 3.0
+YOLO_NUT_FRET_DUPLICATE_MIN_DIRECTION_SIMILARITY = 0.988
 
 
 @dataclass(frozen=True)
@@ -75,26 +82,10 @@ class NormalizedStringLine:
         return self.slope * y_norm + self.intercept
 
 
-@dataclass(frozen=True)
-class NormalizedFretLine:
-    slope: float
-    intercept: float
-
-    def value_at(self, x_norm: float) -> float:
-        return self.slope * x_norm + self.intercept
-
-
 @dataclass
 class TrackedStringState:
     line: NormalizedStringLine
     missing_frames: int = 0
-
-
-@dataclass
-class TrackedFretState:
-    line: NormalizedFretLine
-    missing_frames: int = 0
-    seen_detection: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,7 +94,7 @@ class EdgeRefinementResult:
     fitted_string_indices: tuple[int, ...] = ()
     refined_fret_indices: tuple[int, ...] = ()
     tracked_string_indices: tuple[int, ...] = ()
-    tracked_fret_indices: tuple[int, ...] = ()
+    confirmed_fret_lines: tuple[DetectedLine | None, ...] = ()
 
 
 class StringLineTracker:
@@ -202,146 +193,21 @@ class StringLineTracker:
         return self.detected_alpha
 
 
-class FretLineTracker:
-    def __init__(
-        self,
-        detected_alpha: float = FRET_TRACKER_DETECTED_ALPHA,
-        inferred_alpha: float = FRET_TRACKER_INFERRED_ALPHA,
-        outlier_alpha: float = FRET_TRACKER_OUTLIER_ALPHA,
-        deadband_norm: float = FRET_TRACKER_DEADBAND_NORM,
-        outlier_delta_norm: float = FRET_TRACKER_OUTLIER_DELTA_NORM,
-        max_missing_frames: int = FRET_TRACKER_MAX_MISSING_FRAMES,
-    ) -> None:
-        self.detected_alpha = detected_alpha
-        self.inferred_alpha = inferred_alpha
-        self.outlier_alpha = outlier_alpha
-        self.deadband_norm = deadband_norm
-        self.outlier_delta_norm = outlier_delta_norm
-        self.max_missing_frames = max_missing_frames
-        self._states: list[TrackedFretState | None] = []
-
-    def clear(self) -> None:
-        self._states.clear()
-
-    def clear_indices(self, fret_indices: Collection[int]) -> None:
-        for fret_index in fret_indices:
-            if 0 <= fret_index < len(self._states):
-                self._states[fret_index] = None
-
-    def update(
-        self,
-        detected_lines: tuple[FittedCanonicalLine | None, ...],
-        fallback_lines: tuple[FittedCanonicalLine | None, ...],
-        canonical: CanonicalFretboard,
-        suppressed_fret_indices: Collection[int] | None = None,
-    ) -> tuple[FittedCanonicalLine | None, ...]:
-        fret_count = max(len(detected_lines), len(fallback_lines))
-        self._resize(fret_count)
-        suppressed_indices = set(suppressed_fret_indices or ())
-
-        tracked_lines: list[FittedCanonicalLine | None] = []
-        for fret_index in range(fret_count):
-            detected_line = line_at_index(detected_lines, fret_index)
-            fallback_line = line_at_index(fallback_lines, fret_index)
-            if fret_index in suppressed_indices:
-                self._states[fret_index] = None
-                tracked_lines.append(fallback_line)
-                continue
-
-            measurement = detected_line if detected_line is not None else fallback_line
-            state = self._states[fret_index]
-
-            if measurement is None:
-                held_line = self._hold_or_clear(fret_index, state, canonical)
-                tracked_lines.append(held_line)
-                continue
-
-            normalized_measurement = normalize_fret_line(measurement, canonical)
-            is_detected = detected_line is not None
-            if state is None:
-                next_line = normalized_measurement
-                missing_frames = 0 if is_detected else 1
-                seen_detection = is_detected
-            else:
-                alpha = self._alpha_for_measurement(
-                    previous=state.line,
-                    measurement=normalized_measurement,
-                    is_detected=is_detected,
-                )
-                next_line = blend_normalized_fret_lines(state.line, normalized_measurement, alpha)
-                missing_frames = 0 if is_detected else state.missing_frames + 1
-                seen_detection = state.seen_detection or is_detected
-
-            self._states[fret_index] = TrackedFretState(
-                line=next_line,
-                missing_frames=missing_frames,
-                seen_detection=seen_detection,
-            )
-            tracked_lines.append(denormalize_fret_line(next_line, canonical))
-
-        return tuple(tracked_lines)
-
-    def confirmed_indices(self, fret_count: int) -> tuple[int, ...]:
-        return tuple(
-            fret_index
-            for fret_index, state in enumerate(self._states[:fret_count])
-            if state is not None and state.seen_detection
-        )
-
-    def _resize(self, fret_count: int) -> None:
-        if len(self._states) < fret_count:
-            self._states.extend([None] * (fret_count - len(self._states)))
-        elif len(self._states) > fret_count:
-            del self._states[fret_count:]
-
-    def _hold_or_clear(
-        self,
-        fret_index: int,
-        state: TrackedFretState | None,
-        canonical: CanonicalFretboard,
-    ) -> FittedCanonicalLine | None:
-        if state is None:
-            return None
-
-        state.missing_frames += 1
-        if state.missing_frames > self.max_missing_frames:
-            self._states[fret_index] = None
-            return None
-
-        return denormalize_fret_line(state.line, canonical)
-
-    def _alpha_for_measurement(
-        self,
-        previous: NormalizedFretLine,
-        measurement: NormalizedFretLine,
-        is_detected: bool,
-    ) -> float:
-        distance = normalized_fret_line_distance(previous, measurement)
-        if distance <= self.deadband_norm:
-            return 0.0
-
-        if not is_detected:
-            return self.inferred_alpha
-
-        if distance > self.outlier_delta_norm:
-            return self.outlier_alpha
-
-        return self.detected_alpha
-
-
 def refine_grid_with_edge_lines(
     frame_bgr: np.ndarray,
     grid: StableFretboardGrid | None,
     string_tracker: StringLineTracker | None = None,
-    fret_tracker: FretLineTracker | None = None,
     suppressed_fret_indices: Collection[int] | None = None,
+    apply_fret_refinement: bool = True,
+    yolo_detected_lines: Collection[DetectedLine] | None = None,
 ) -> StableFretboardGrid | None:
     return refine_grid_with_edge_lines_diagnostics(
         frame_bgr,
         grid,
         string_tracker=string_tracker,
-        fret_tracker=fret_tracker,
         suppressed_fret_indices=suppressed_fret_indices,
+        apply_fret_refinement=apply_fret_refinement,
+        yolo_detected_lines=yolo_detected_lines,
     ).grid
 
 
@@ -349,8 +215,9 @@ def refine_grid_with_edge_lines_diagnostics(
     frame_bgr: np.ndarray,
     grid: StableFretboardGrid | None,
     string_tracker: StringLineTracker | None = None,
-    fret_tracker: FretLineTracker | None = None,
     suppressed_fret_indices: Collection[int] | None = None,
+    apply_fret_refinement: bool = True,
+    yolo_detected_lines: Collection[DetectedLine] | None = None,
 ) -> EdgeRefinementResult:
     if grid is None or not grid.ordered_fret_lines:
         return EdgeRefinementResult(grid=grid)
@@ -368,9 +235,10 @@ def refine_grid_with_edge_lines_diagnostics(
     gray = preprocess_warped_frame(warped)
 
     vertical_strength = normalized_sobel_strength(gray, dx=1, dy=0)
-    horizontal_strength = normalized_sobel_strength(gray, dx=0, dy=1)
+    ridge_strength = normalized_ridge_strength(gray)
+    string_strength = combine_edge_and_ridge_strength(vertical_strength, ridge_strength)
 
-    string_lines = fit_string_lines(vertical_strength, canonical.width, canonical.height)
+    string_lines = fit_string_lines(string_strength, canonical.width, canonical.height)
     fitted_string_indices = tuple(
         string_index
         for string_index, string_line in enumerate(string_lines)
@@ -387,50 +255,36 @@ def refine_grid_with_edge_lines_diagnostics(
         for string_index, string_line in enumerate(tracked_string_lines)
         if string_line is not None
     )
-    fitted_fret_lines, refined_fret_indices = fit_fret_lines_with_support(
-        horizontal_strength=horizontal_strength,
-        grid=grid,
-        canonical=canonical,
-    )
     suppressed_indices = valid_fret_indices(
         suppressed_fret_indices,
         len(grid.ordered_fret_lines),
     )
-    if suppressed_indices:
-        fitted_fret_lines = tuple(
-            None if fret_index in suppressed_indices else fitted_line
-            for fret_index, fitted_line in enumerate(fitted_fret_lines)
-        )
-        refined_fret_indices = tuple(
-            fret_index for fret_index in refined_fret_indices if fret_index not in suppressed_indices
-        )
-    fallback_fret_lines = canonical_y_fits_from_grid_frets(grid, canonical)
-    if fret_tracker is not None:
-        tracked_fret_lines = fret_tracker.update(
-            fitted_fret_lines,
-            fallback_fret_lines,
-            canonical,
-            suppressed_fret_indices=suppressed_indices,
-        )
-        tracked_fret_indices = tuple(
-            fret_index
-            for fret_index in fret_tracker.confirmed_indices(len(tracked_fret_lines))
-            if fret_index not in suppressed_indices
-        )
-    else:
-        tracked_fret_lines = merge_detected_and_fallback_lines(fitted_fret_lines, fallback_fret_lines)
-        tracked_fret_indices = ()
-    refined_frets = fret_lines_from_canonical_y_fits(
+    yolo_fret_lines, yolo_fret_indices = yolo_fret_fits_from_detected_lines(
         grid=grid,
         canonical=canonical,
-        fitted_lines=tracked_fret_lines,
+        yolo_detected_lines=yolo_detected_lines,
+        suppressed_fret_indices=suppressed_indices,
+    )
+    if apply_fret_refinement:
+        fallback_fret_lines = canonical_y_fits_from_grid_frets(grid, canonical)
+        refined_frets = fret_lines_from_canonical_y_fits(
+            grid=grid,
+            canonical=canonical,
+            fitted_lines=merge_detected_and_fallback_lines(yolo_fret_lines, fallback_fret_lines),
+        )
+    else:
+        refined_frets = list(grid.ordered_fret_lines)
+    confirmed_fret_lines = confirmed_fret_lines_from_canonical_y_fits(
+        grid=grid,
+        canonical=canonical,
+        fitted_lines=yolo_fret_lines,
+        confirmed_indices=yolo_fret_indices,
     )
 
     if (
         not fitted_string_indices
         and not tracked_string_indices
-        and not refined_fret_indices
-        and not tracked_fret_indices
+        and not yolo_fret_indices
     ):
         return EdgeRefinementResult(grid=grid)
 
@@ -448,9 +302,142 @@ def refine_grid_with_edge_lines_diagnostics(
     return EdgeRefinementResult(
         grid=refined_grid,
         fitted_string_indices=fitted_string_indices,
-        refined_fret_indices=refined_fret_indices,
+        refined_fret_indices=yolo_fret_indices,
         tracked_string_indices=tracked_string_indices,
-        tracked_fret_indices=tracked_fret_indices,
+        confirmed_fret_lines=confirmed_fret_lines,
+    )
+
+
+def yolo_fret_fits_from_detected_lines(
+    grid: StableFretboardGrid,
+    canonical: CanonicalFretboard,
+    yolo_detected_lines: Collection[DetectedLine] | None,
+    suppressed_fret_indices: Collection[int] | None = None,
+) -> tuple[tuple[FittedCanonicalLine | None, ...], tuple[int, ...]]:
+    fitted_lines: list[FittedCanonicalLine | None] = [None] * len(grid.ordered_fret_lines)
+    if not yolo_detected_lines:
+        return tuple(fitted_lines), ()
+
+    yolo_frets = tuple(line for line in yolo_detected_lines if line.kind == "fret")
+    if not yolo_frets:
+        return tuple(fitted_lines), ()
+
+    yolo_nuts = tuple(line for line in yolo_detected_lines if line.kind == "nut")
+    current_nut_line = max(yolo_nuts, key=lambda line: line.confidence, default=grid.nut_line)
+    current_nut_line = orient_line_for_screen(current_nut_line)
+    nut_direction = normalize(line_vector(current_nut_line))
+    neck_direction = neck_direction_from_pair(current_nut_line, grid.ordered_fret_lines[-1])
+    nut_midpoint = line_midpoint(current_nut_line)
+    suppressed_indices = set(suppressed_fret_indices or ())
+
+    candidates: list[tuple[float, DetectedLine, FittedCanonicalLine]] = []
+    for fret_line in yolo_frets:
+        normalized_fret = orient_line_like_reference(orient_line_for_screen(fret_line), nut_direction)
+        distance = float(np.dot(line_midpoint(normalized_fret) - nut_midpoint, neck_direction))
+        if distance <= 0.0:
+            continue
+        if is_yolo_fret_duplicate_of_nut(
+            current_nut_line,
+            normalized_fret,
+            distance,
+        ):
+            continue
+        fitted_line = canonical_y_fit_from_image_line(normalized_fret, canonical)
+        if fitted_line is None:
+            continue
+        candidates.append((distance, normalized_fret, fitted_line))
+
+    duplicate_distance = yolo_fret_duplicate_distance_threshold(grid, current_nut_line)
+    ordered_candidates = merge_ordered_yolo_fret_duplicates(candidates, duplicate_distance)
+    confirmed_indices: list[int] = []
+    for fret_index, (_, _, fitted_line) in enumerate(ordered_candidates):
+        if fret_index >= len(fitted_lines):
+            break
+        if fret_index in suppressed_indices or not 0 <= fret_index < len(fitted_lines):
+            continue
+        fitted_lines[fret_index] = fitted_line
+        confirmed_indices.append(fret_index)
+
+    return tuple(fitted_lines), tuple(sorted(set(confirmed_indices)))
+
+
+def merge_ordered_yolo_fret_duplicates(
+    candidates: list[tuple[float, DetectedLine, FittedCanonicalLine]],
+    duplicate_distance: float = YOLO_FRET_DUPLICATE_DISTANCE_PX,
+) -> list[tuple[float, DetectedLine, FittedCanonicalLine]]:
+    if not candidates:
+        return []
+
+    ordered = sorted(candidates, key=lambda item: item[0])
+    clusters: list[list[tuple[float, DetectedLine, FittedCanonicalLine]]] = [[ordered[0]]]
+    for candidate in ordered[1:]:
+        representative = max(clusters[-1], key=lambda item: item[1].confidence)
+        if is_duplicate_yolo_fret(representative, candidate, duplicate_distance):
+            clusters[-1].append(candidate)
+        else:
+            clusters.append([candidate])
+
+    return [
+        max(cluster, key=lambda item: item[1].confidence)
+        for cluster in clusters
+    ]
+
+
+def is_yolo_fret_duplicate_of_nut(
+    nut_line: DetectedLine,
+    fret_line: DetectedLine,
+    neck_distance: float,
+) -> bool:
+    return (
+        neck_distance <= YOLO_NUT_FRET_DUPLICATE_DISTANCE_PX
+        and line_direction_similarity(nut_line, fret_line) >= YOLO_NUT_FRET_DUPLICATE_MIN_DIRECTION_SIMILARITY
+    )
+
+
+def is_duplicate_yolo_fret(
+    first: tuple[float, DetectedLine, FittedCanonicalLine],
+    second: tuple[float, DetectedLine, FittedCanonicalLine],
+    duplicate_distance: float,
+) -> bool:
+    return (
+        abs(first[0] - second[0]) <= duplicate_distance
+        and line_direction_similarity(first[1], second[1]) >= YOLO_FRET_DUPLICATE_MIN_DIRECTION_SIMILARITY
+    )
+
+
+def line_direction_similarity(first_line: DetectedLine, second_line: DetectedLine) -> float:
+    first_direction = normalize(line_vector(first_line))
+    second_direction = normalize(line_vector(second_line))
+    if not np.any(first_direction) or not np.any(second_direction):
+        return 0.0
+    return abs(float(np.dot(first_direction, second_direction)))
+
+
+def yolo_fret_duplicate_distance_threshold(
+    grid: StableFretboardGrid,
+    nut_line: DetectedLine,
+) -> float:
+    neck_direction = neck_direction_from_pair(nut_line, grid.ordered_fret_lines[-1])
+    reference_lines = (nut_line, *grid.ordered_fret_lines)
+    projected_positions = [
+        float(np.dot(line_midpoint(line) - line_midpoint(nut_line), neck_direction))
+        for line in reference_lines
+    ]
+    gaps = [
+        abs(second - first)
+        for first, second in zip(projected_positions[:-1], projected_positions[1:])
+        if abs(second - first) > 1e-6
+    ]
+    if not gaps:
+        return YOLO_FRET_DUPLICATE_DISTANCE_PX
+
+    adaptive_distance = min(gaps) * YOLO_FRET_DUPLICATE_GAP_RATIO
+    return float(
+        np.clip(
+            adaptive_distance,
+            YOLO_FRET_DUPLICATE_DISTANCE_PX,
+            YOLO_FRET_DUPLICATE_MAX_DISTANCE_PX,
+        )
     )
 
 
@@ -488,18 +475,6 @@ def normalize_string_line(
     )
 
 
-def normalize_fret_line(
-    line: FittedCanonicalLine,
-    canonical: CanonicalFretboard,
-) -> NormalizedFretLine:
-    x_scale = max(float(canonical.width - 1), 1.0)
-    y_scale = max(float(canonical.height - 1), 1.0)
-    return NormalizedFretLine(
-        slope=float(line.slope * x_scale / y_scale),
-        intercept=float(line.intercept / y_scale),
-    )
-
-
 def denormalize_string_line(
     line: NormalizedStringLine,
     canonical: CanonicalFretboard,
@@ -509,20 +484,6 @@ def denormalize_string_line(
     return FittedCanonicalLine(
         slope=float(line.slope * x_scale / y_scale),
         intercept=float(line.intercept * x_scale),
-        support_count=0,
-        coverage_ratio=0.0,
-    )
-
-
-def denormalize_fret_line(
-    line: NormalizedFretLine,
-    canonical: CanonicalFretboard,
-) -> FittedCanonicalLine:
-    x_scale = max(float(canonical.width - 1), 1.0)
-    y_scale = max(float(canonical.height - 1), 1.0)
-    return FittedCanonicalLine(
-        slope=float(line.slope * y_scale / x_scale),
-        intercept=float(line.intercept * y_scale),
         support_count=0,
         coverage_ratio=0.0,
     )
@@ -541,33 +502,12 @@ def blend_normalized_lines(
     )
 
 
-def blend_normalized_fret_lines(
-    previous: NormalizedFretLine,
-    measurement: NormalizedFretLine,
-    alpha: float,
-) -> NormalizedFretLine:
-    alpha = float(np.clip(alpha, 0.0, 1.0))
-    keep = 1.0 - alpha
-    return NormalizedFretLine(
-        slope=previous.slope * keep + measurement.slope * alpha,
-        intercept=previous.intercept * keep + measurement.intercept * alpha,
-    )
-
-
 def normalized_line_distance(
     first_line: NormalizedStringLine,
     second_line: NormalizedStringLine,
 ) -> float:
     sample_y = (0.0, 0.5, 1.0)
     return max(abs(first_line.value_at(y_value) - second_line.value_at(y_value)) for y_value in sample_y)
-
-
-def normalized_fret_line_distance(
-    first_line: NormalizedFretLine,
-    second_line: NormalizedFretLine,
-) -> float:
-    sample_x = (0.0, 0.5, 1.0)
-    return max(abs(first_line.value_at(x_value) - second_line.value_at(x_value)) for x_value in sample_x)
 
 
 def build_canonical_fretboard(grid: StableFretboardGrid) -> CanonicalFretboard | None:
@@ -635,6 +575,26 @@ def normalized_sobel_strength(gray: np.ndarray, dx: int, dy: int) -> np.ndarray:
     return np.clip(strength / scale, 0.0, 1.0).astype(np.float32)
 
 
+def normalized_ridge_strength(gray: np.ndarray) -> np.ndarray:
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    ridge = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+    ridge = cv2.GaussianBlur(ridge, (3, 3), 0).astype(np.float32)
+    scale = float(np.percentile(ridge, 98.0))
+    if scale <= 1e-6:
+        return np.zeros_like(ridge, dtype=np.float32)
+    return np.clip(ridge / scale, 0.0, 1.0).astype(np.float32)
+
+
+def combine_edge_and_ridge_strength(
+    edge_strength: np.ndarray,
+    ridge_strength: np.ndarray,
+) -> np.ndarray:
+    return np.maximum(
+        edge_strength * EDGE_STRENGTH_WEIGHT,
+        ridge_strength * RIDGE_STRENGTH_WEIGHT,
+    ).astype(np.float32)
+
+
 def fit_string_lines(
     vertical_strength: np.ndarray,
     width: int,
@@ -643,27 +603,87 @@ def fit_string_lines(
     expected_positions = expected_string_positions(width)
     search_radius = max(10.0, min(42.0, width * STRING_SEARCH_RADIUS_RATIO))
     bin_count = max(8, min(56, int(round(height / EDGE_BIN_TARGET_PX))))
+    profile_positions = axis_profile_peak_positions(
+        strength=vertical_strength,
+        expected_positions=expected_positions,
+        search_radius=search_radius,
+        axis="x",
+    )
 
     lines: list[FittedCanonicalLine | None] = []
-    for expected_x in expected_positions:
+    for string_index, expected_x in enumerate(expected_positions):
+        profile_position = profile_positions[string_index]
+        fit_expected_x = profile_position if profile_position is not None else float(expected_x)
         points = collect_axis_peak_points(
             strength=vertical_strength,
-            expected_position=float(expected_x),
+            expected_position=fit_expected_x,
             search_radius=search_radius,
             bin_count=bin_count,
             fit_axis="x_from_y",
         )
         line = fit_canonical_line(
             points=points,
-            expected_position=float(expected_x),
+            expected_position=fit_expected_x,
             search_radius=search_radius,
             coordinate_limit=float(height - 1),
             value_limit=float(width - 1),
             min_points=MIN_STRING_SUPPORT_POINTS,
             max_endpoint_delta=max(width * 0.13, search_radius * 2.0),
         )
+        if line is None and profile_position is not None:
+            line = FittedCanonicalLine(
+                slope=0.0,
+                intercept=float(profile_position),
+                support_count=0,
+                coverage_ratio=1.0,
+            )
         lines.append(line)
     return tuple(lines)
+
+
+def axis_profile_peak_positions(
+    strength: np.ndarray,
+    expected_positions: np.ndarray,
+    search_radius: float,
+    axis: str,
+) -> tuple[float | None, ...]:
+    return tuple(
+        axis_profile_peak_position(
+            strength=strength,
+            expected_position=float(expected_position),
+            search_radius=search_radius,
+            axis=axis,
+        )
+        for expected_position in expected_positions
+    )
+
+
+def axis_profile_peak_position(
+    strength: np.ndarray,
+    expected_position: float,
+    search_radius: float,
+    axis: str,
+) -> float | None:
+    if axis == "x":
+        profile = np.mean(strength, axis=0)
+        value_limit = strength.shape[1]
+    elif axis == "y":
+        profile = np.mean(strength, axis=1)
+        value_limit = strength.shape[0]
+    else:
+        raise ValueError(f"Unsupported axis: {axis}")
+
+    value_start = max(0, int(np.floor(float(expected_position) - search_radius)))
+    value_end = min(value_limit, int(np.ceil(float(expected_position) + search_radius)) + 1)
+    if value_end - value_start < 4:
+        return None
+
+    peak = peak_centroid(profile[value_start:value_end])
+    if peak is None:
+        return None
+
+    offset, _ = peak
+    return float(value_start) + offset
 
 
 def expected_string_positions(width: int) -> np.ndarray:
@@ -758,24 +778,56 @@ def fit_fret_lines_with_support(
     fitted_frets: list[FittedCanonicalLine | None] = []
     refined_indices: list[int] = []
     for fret_index, expected_y in enumerate(expected_y_positions):
+        neighbor_gap = fret_neighbor_gap(expected_y_positions, fret_index)
         search_radius = fret_search_radius(expected_y_positions, fret_index, canonical.height)
+        endpoint_delta_limit = fret_endpoint_delta_limit(
+            search_radius=search_radius,
+            neighbor_gap=neighbor_gap,
+            height=canonical.height,
+        )
+        profile_position = axis_profile_peak_position(
+            strength=horizontal_strength,
+            expected_position=expected_y,
+            search_radius=search_radius,
+            axis="y",
+        )
+        fit_expected_y = expected_y
+        if (
+            profile_position is not None
+            and abs(profile_position - expected_y) <= endpoint_delta_limit
+        ):
+            fit_expected_y = profile_position
         bin_count = max(8, min(48, int(round(canonical.width / EDGE_BIN_TARGET_PX))))
         points = collect_axis_peak_points(
             strength=horizontal_strength,
-            expected_position=expected_y,
+            expected_position=fit_expected_y,
             search_radius=search_radius,
             bin_count=bin_count,
             fit_axis="y_from_x",
         )
         fitted_line = fit_canonical_line(
             points=points,
-            expected_position=expected_y,
+            expected_position=fit_expected_y,
             search_radius=search_radius,
             coordinate_limit=float(canonical.width - 1),
             value_limit=float(canonical.height - 1),
             min_points=MIN_FRET_SUPPORT_POINTS,
-            max_endpoint_delta=max(search_radius * 1.8, canonical.height * 0.035),
+            max_endpoint_delta=endpoint_delta_limit,
+            min_coverage=FRET_MIN_COVERAGE_RATIO,
+            strict_coverage=True,
         )
+        if fitted_line is None:
+            fitted_line = fit_canonical_line(
+                points=points,
+                expected_position=fit_expected_y,
+                search_radius=search_radius,
+                coordinate_limit=float(canonical.width - 1),
+                value_limit=float(canonical.height - 1),
+                min_points=FRET_FALLBACK_MIN_SUPPORT_POINTS,
+                max_endpoint_delta=endpoint_delta_limit,
+                min_coverage=FRET_FALLBACK_MIN_COVERAGE_RATIO,
+                strict_coverage=True,
+            )
         if fitted_line is None:
             fitted_frets.append(None)
             continue
@@ -783,6 +835,28 @@ def fit_fret_lines_with_support(
         fitted_frets.append(fitted_line)
         refined_indices.append(fret_index)
     return tuple(fitted_frets), tuple(refined_indices)
+
+
+def fret_neighbor_gap(expected_y_positions: list[float], index: int) -> float | None:
+    neighbor_gaps: list[float] = []
+    if index > 0:
+        neighbor_gaps.append(abs(expected_y_positions[index] - expected_y_positions[index - 1]))
+    if index + 1 < len(expected_y_positions):
+        neighbor_gaps.append(abs(expected_y_positions[index + 1] - expected_y_positions[index]))
+    if not neighbor_gaps:
+        return None
+    return min(neighbor_gaps)
+
+
+def fret_endpoint_delta_limit(
+    search_radius: float,
+    neighbor_gap: float | None,
+    height: int,
+) -> float:
+    base_limit = max(search_radius * 1.8, height * 0.035)
+    if neighbor_gap is None:
+        return base_limit
+    return min(base_limit, max(2.5, neighbor_gap * 0.48))
 
 
 def canonical_y_fits_from_grid_frets(
@@ -847,6 +921,27 @@ def fret_lines_from_canonical_y_fits(
         refined = line_from_canonical_y_fit(fitted_line, fallback_line, canonical, nut_direction)
         fret_lines.append(refined if refined is not None else fallback_line)
     return fret_lines
+
+
+def confirmed_fret_lines_from_canonical_y_fits(
+    grid: StableFretboardGrid,
+    canonical: CanonicalFretboard,
+    fitted_lines: tuple[FittedCanonicalLine | None, ...],
+    confirmed_indices: tuple[int, ...],
+) -> tuple[DetectedLine | None, ...]:
+    confirmed_index_set = set(confirmed_indices)
+    nut_direction = normalize(line_vector(grid.nut_line))
+    confirmed_lines: list[DetectedLine | None] = []
+    for fret_index, fallback_line in enumerate(grid.ordered_fret_lines):
+        fitted_line = line_at_index(fitted_lines, fret_index)
+        if fret_index not in confirmed_index_set or fitted_line is None:
+            confirmed_lines.append(None)
+            continue
+
+        confirmed_lines.append(
+            line_from_canonical_y_fit(fitted_line, fallback_line, canonical, nut_direction)
+        )
+    return tuple(confirmed_lines)
 
 
 def canonical_y_positions_for_frets(
@@ -962,6 +1057,8 @@ def fit_canonical_line(
     value_limit: float,
     min_points: int,
     max_endpoint_delta: float,
+    min_coverage: float = 0.24,
+    strict_coverage: bool = False,
 ) -> FittedCanonicalLine | None:
     if len(points) < min_points:
         return None
@@ -994,7 +1091,10 @@ def fit_canonical_line(
     coverage = 0.0
     if coordinates.size >= 2:
         coverage = float((np.max(coordinates) - np.min(coordinates)) / max(coordinate_limit, 1.0))
-    if coverage < 0.24 and coordinates.size < min_points + 3:
+    if strict_coverage:
+        if coverage < min_coverage:
+            return None
+    elif coverage < min_coverage and coordinates.size < min_points + 3:
         return None
 
     return FittedCanonicalLine(

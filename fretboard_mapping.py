@@ -42,8 +42,8 @@ GAP_RATIO_MIN = 0.55
 GAP_RATIO_MAX = 1.15
 SELECTED_LINE_HOLD_FRAMES = 12
 SELECTED_LINE_CLEAR_FRAMES = 20
-SELECTED_LINE_ROI_EXPAND_RATIO = 1.65
-SELECTED_LINE_ROI_PADDING = 36.0
+SELECTED_LINE_ROI_EXPAND_RATIO = 2.0
+SELECTED_LINE_ROI_PADDING = 72.0
 EDGE_SUPPORT_ANGLE_MIN = 0.92
 EDGE_SUPPORT_MIN_LINES = 3
 EDGE_SUPPORT_PRIOR_WEIGHT = 0.34
@@ -52,8 +52,13 @@ SELECTED_REFERENCE_GAP_RATIO_TRACK_MIN = 0.88
 SELECTED_REFERENCE_GAP_RATIO_TRACK_MAX = 1.18
 SELECTED_REFERENCE_GAP_RATIO_REACQUIRE_MIN = 0.72
 SELECTED_REFERENCE_GAP_RATIO_REACQUIRE_MAX = 1.35
-SELECTED_REFERENCE_SCORE_SLACK = 24.0
+SELECTED_REFERENCE_CONFIDENCE_BONUS = 4.0
+SELECTED_REFERENCE_LOCAL_GAP_TOLERANCE_MIN_PX = 3.5
 SELECTED_REFERENCE_SUPPORT_MIN_LINES = 2
+SELECTED_REFERENCE_INNER_FRET_GUARD_RATIO = 0.45
+INDEXED_FRET_DISTANCE_TOLERANCE_RATIO = 0.35
+INDEXED_FRET_DISTANCE_TOLERANCE_MIN_PX = 4.0
+INDEXED_FRET_DISTANCE_TOLERANCE_MAX_PX = 16.0
 
 
 @dataclass(frozen=True)
@@ -240,6 +245,25 @@ class SelectedLineTracker:
         )
         self.missed_frames = 0
 
+    def set_reference_fret_index(self, reference_fret_index: int) -> None:
+        if reference_fret_index < 1:
+            raise ValueError("Reference fret index must be at least 1.")
+
+        self.reference_fret_index = reference_fret_index
+        if self.current_nut_line is None or self.current_reference_fret_line is None:
+            return
+
+        self.nut_history.clear()
+        self.reference_history.clear()
+        self.nut_history.append(self.current_nut_line)
+        self.reference_history.append(self.current_reference_fret_line)
+        self.last_stable_grid = build_grid_from_reference_lines(
+            nut_line=self.current_nut_line,
+            reference_fret_line=self.current_reference_fret_line,
+            reference_fret_index=reference_fret_index,
+        )
+        self.missed_frames = 0
+
     def search_roi(self, frame_shape: Sequence[int]) -> tuple[int, int, int, int] | None:
         frame_height, frame_width = int(frame_shape[0]), int(frame_shape[1])
         tracked_lines = self._current_tracked_lines()
@@ -415,8 +439,10 @@ class SelectedLineTracker:
         current_gap = max(projected_pair_gap(self.current_nut_line, self.current_reference_fret_line), 1.0)
         minimum_ratio, maximum_ratio = self._gap_ratio_bounds(relaxed=relaxed)
 
-        ranked_candidates: list[tuple[float, float, DetectedLine]] = []
-        best_score = float("inf")
+        expected_reference = self._translate_reference_with_nut(matched_nut) or self.current_reference_fret_line
+        expected_gap = projected_pair_gap(matched_nut, expected_reference)
+        inner_fret_guard = self._reference_inner_fret_guard(current_gap)
+        ranked_candidates: list[tuple[float, float, float, DetectedLine]] = []
         for fret_candidate in fret_candidates:
             normalized_candidate = orient_line_like_reference(
                 orient_line_for_screen(fret_candidate),
@@ -430,27 +456,34 @@ class SelectedLineTracker:
             if gap_ratio < minimum_ratio or gap_ratio > maximum_ratio:
                 continue
 
-            candidate_score = line_match_score(self.current_reference_fret_line, normalized_candidate)
-            ranked_candidates.append((candidate_gap, candidate_score, normalized_candidate))
-            best_score = min(best_score, candidate_score)
+            distance_past_expected = candidate_gap - expected_gap
+            confidence_bonus = normalized_candidate.confidence * SELECTED_REFERENCE_CONFIDENCE_BONUS
+            shape_score = line_match_score(expected_reference, normalized_candidate) * 0.02
+            ranked_score = -candidate_gap + shape_score - confidence_bonus
+            ranked_candidates.append(
+                (ranked_score, distance_past_expected, -normalized_candidate.confidence, normalized_candidate)
+            )
 
         if not ranked_candidates:
             return None
 
-        score_slack = max(
-            SELECTED_REFERENCE_SCORE_SLACK,
-            line_length(self.current_reference_fret_line) * 0.12,
-        )
-        preferred_candidates = [
-            candidate
-            for candidate in ranked_candidates
-            if candidate[1] <= best_score + score_slack
-        ]
-        if not preferred_candidates:
+        ranked_candidates.sort(key=lambda candidate: (candidate[0], candidate[1], candidate[2]))
+        _, distance_past_expected, _, selected_candidate = ranked_candidates[0]
+        if distance_past_expected < -inner_fret_guard:
             return None
+        return selected_candidate
 
-        preferred_candidates.sort(key=lambda candidate: (-candidate[0], candidate[1]))
-        return preferred_candidates[0][2]
+    def _reference_inner_fret_guard(self, current_gap: float) -> float:
+        if self.reference_fret_index is None or self.reference_fret_index <= 1:
+            return max(SELECTED_REFERENCE_LOCAL_GAP_TOLERANCE_MIN_PX, current_gap * 0.04)
+
+        current_ratio = scale_length_ratio(self.reference_fret_index)
+        previous_ratio = scale_length_ratio(self.reference_fret_index - 1)
+        if current_ratio <= 1e-6 or previous_ratio <= 0.0:
+            return max(SELECTED_REFERENCE_LOCAL_GAP_TOLERANCE_MIN_PX, current_gap * 0.04)
+
+        local_gap = current_gap * max(current_ratio - previous_ratio, 0.0) / current_ratio
+        return max(SELECTED_REFERENCE_LOCAL_GAP_TOLERANCE_MIN_PX, local_gap * SELECTED_REFERENCE_INNER_FRET_GUARD_RATIO)
 
     def _build_reference_locked_grid(
         self,
@@ -845,6 +878,7 @@ def build_fretboard_grid_with_anchored_nut(
         indexed_fret_lines = infer_indexed_fret_lines_from_reference_grid(
             prior_grid,
             tuple(line for _, line in merged_candidates),
+            current_nut_line=nut_line,
         )
         if indexed_fret_lines:
             support_lines = (nut_line, *(line for _, line in indexed_fret_lines))
@@ -1567,26 +1601,68 @@ def build_grid_from_reference_lines(
 def infer_indexed_fret_lines_from_reference_grid(
     reference_grid: StableFretboardGrid,
     fret_lines: Sequence[DetectedLine],
+    current_nut_line: DetectedLine | None = None,
 ) -> tuple[tuple[int, DetectedLine], ...]:
     if not reference_grid.ordered_fret_lines or not fret_lines:
         return ()
 
-    nut_midpoint = line_midpoint(reference_grid.nut_line)
-    reference_fret_line = reference_grid.ordered_fret_lines[-1]
-    neck_direction = neck_direction_from_pair(reference_grid.nut_line, reference_fret_line)
-    reference_gap = max(projected_pair_gap(reference_grid.nut_line, reference_fret_line), 1.0)
-    distance_tolerance = max(18.0, reference_gap * 0.18)
+    reference_nut_line = reference_grid.nut_line
+    reference_fret_lines = reference_grid.ordered_fret_lines
+    if current_nut_line is not None:
+        normalized_nut = orient_line_like_reference(
+            orient_line_for_screen(current_nut_line),
+            normalize(line_vector(reference_grid.nut_line)),
+        )
+        midpoint_delta = line_midpoint(normalized_nut) - line_midpoint(reference_grid.nut_line)
+        reference_nut_line = DetectedLine(
+            kind="nut",
+            p0=point_tuple(point_array(reference_grid.nut_line.p0) + midpoint_delta),
+            p1=point_tuple(point_array(reference_grid.nut_line.p1) + midpoint_delta),
+            confidence=normalized_nut.confidence,
+        )
+        reference_fret_lines = tuple(
+            DetectedLine(
+                kind=fret_line.kind,
+                p0=point_tuple(point_array(fret_line.p0) + midpoint_delta),
+                p1=point_tuple(point_array(fret_line.p1) + midpoint_delta),
+                confidence=fret_line.confidence,
+            )
+            for fret_line in reference_grid.ordered_fret_lines
+        )
 
-    target_distances = [
+    nut_midpoint = line_midpoint(reference_nut_line)
+    reference_fret_line = reference_fret_lines[-1]
+    neck_direction = neck_direction_from_pair(reference_nut_line, reference_fret_line)
+
+    target_distance_entries = [
         (
             fret_index,
             float(np.dot(line_midpoint(projected_line) - nut_midpoint, neck_direction)),
             projected_line,
         )
-        for fret_index, projected_line in enumerate(reference_grid.ordered_fret_lines, start=1)
+        for fret_index, projected_line in enumerate(reference_fret_lines, start=1)
     ]
-    if not target_distances:
+    if not target_distance_entries:
         return ()
+
+    target_distances: list[tuple[int, float, DetectedLine, float]] = []
+    for target_index, (fret_index, target_distance, projected_line) in enumerate(target_distance_entries):
+        neighbor_gaps: list[float] = []
+        if target_index > 0:
+            neighbor_gaps.append(abs(target_distance - target_distance_entries[target_index - 1][1]))
+        if target_index + 1 < len(target_distance_entries):
+            neighbor_gaps.append(abs(target_distance_entries[target_index + 1][1] - target_distance))
+        if neighbor_gaps:
+            local_tolerance = min(
+                INDEXED_FRET_DISTANCE_TOLERANCE_MAX_PX,
+                max(
+                    INDEXED_FRET_DISTANCE_TOLERANCE_MIN_PX,
+                    min(neighbor_gaps) * INDEXED_FRET_DISTANCE_TOLERANCE_RATIO,
+                ),
+            )
+        else:
+            local_tolerance = INDEXED_FRET_DISTANCE_TOLERANCE_MIN_PX
+        target_distances.append((fret_index, target_distance, projected_line, local_tolerance))
 
     best_by_index: dict[int, tuple[float, DetectedLine]] = {}
     for fret_line in fret_lines:
@@ -1594,7 +1670,7 @@ def infer_indexed_fret_lines_from_reference_grid(
         if distance <= 0.0:
             continue
 
-        best_index, target_distance, projected_line = min(
+        best_index, target_distance, projected_line, distance_tolerance = min(
             target_distances,
             key=lambda item: abs(item[1] - distance),
         )
