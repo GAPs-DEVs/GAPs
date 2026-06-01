@@ -306,6 +306,10 @@ class SelectedLineTracker:
         ):
             return SelectedTrackingResult(stable_grid=None, tracked_lines=(), tracking_mode="selected_lines_lost")
 
+        primary_support_grid = self._build_support_projected_grid(primary_detected_lines, relaxed=False)
+        if primary_support_grid is not None:
+            return self._apply_grid_match(primary_support_grid, tracking_mode="selected_lines_tracking")
+
         primary_pair = self._match_locked_pair(
             nut_candidates=[line for line in primary_detected_lines if line.kind == "nut"],
             fret_candidates=[line for line in primary_detected_lines if line.kind == "fret"],
@@ -321,11 +325,17 @@ class SelectedLineTracker:
                 support_lines=primary_detected_lines,
             )
 
-        primary_support_grid = self._build_support_projected_grid(primary_detected_lines, relaxed=False)
-        if primary_support_grid is not None:
-            return self._apply_grid_match(primary_support_grid, tracking_mode="selected_lines_tracking")
-
         if fallback_detected_lines is not None:
+            fallback_support_grid = self._build_support_projected_grid(
+                fallback_detected_lines,
+                relaxed=True,
+            )
+            if fallback_support_grid is not None:
+                return self._apply_grid_match(
+                    fallback_support_grid,
+                    tracking_mode="selected_lines_reacquired",
+                )
+
             fallback_pair = self._match_locked_pair(
                 nut_candidates=[line for line in fallback_detected_lines if line.kind == "nut"],
                 fret_candidates=[line for line in fallback_detected_lines if line.kind == "fret"],
@@ -343,16 +353,6 @@ class SelectedLineTracker:
                     *fallback_pair,
                     tracking_mode="selected_lines_reacquired",
                     support_lines=fallback_support_lines,
-                )
-
-            fallback_support_grid = self._build_support_projected_grid(
-                fallback_detected_lines,
-                relaxed=True,
-            )
-            if fallback_support_grid is not None:
-                return self._apply_grid_match(
-                    fallback_support_grid,
-                    tracking_mode="selected_lines_reacquired",
                 )
 
         combined_lines = tuple(primary_detected_lines) + tuple(fallback_detected_lines or ())
@@ -581,14 +581,6 @@ class SelectedLineTracker:
         if translated_reference is None:
             return None
 
-        provisional_grid = build_grid_from_reference_lines(
-            nut_line=matched_nut,
-            reference_fret_line=translated_reference,
-            reference_fret_index=self.reference_fret_index,
-        )
-        if provisional_grid is None:
-            return None
-
         reference_direction = normalize(line_vector(matched_nut))
         support_fret_lines = [
             orient_line_like_reference(orient_line_for_screen(line), reference_direction)
@@ -596,6 +588,28 @@ class SelectedLineTracker:
             if line.kind == "fret"
         ]
         if len(support_fret_lines) < SELECTED_REFERENCE_SUPPORT_MIN_LINES:
+            return None
+
+        refined_pair = refine_reference_pair_with_support(
+            matched_nut,
+            translated_reference,
+            support_lines=(matched_nut, *support_fret_lines),
+            prior_grid=self.last_stable_grid,
+        )
+        if refined_pair is not None:
+            matched_nut, translated_reference = refined_pair
+            reference_direction = normalize(line_vector(matched_nut))
+            support_fret_lines = [
+                orient_line_like_reference(line, reference_direction)
+                for line in support_fret_lines
+            ]
+
+        provisional_grid = build_grid_from_reference_lines(
+            nut_line=matched_nut,
+            reference_fret_line=translated_reference,
+            reference_fret_index=self.reference_fret_index,
+        )
+        if provisional_grid is None:
             return None
 
         refined_support_frets = refine_lines_with_fitted_edges(
@@ -619,6 +633,8 @@ class SelectedLineTracker:
             nut_line=matched_nut,
             indexed_fret_lines=indexed_fret_lines,
             max_fret_index=self.reference_fret_index,
+            support_lines=(matched_nut, *support_fret_lines),
+            prior_grid=self.last_stable_grid,
         )
         if candidate_grid is None or not candidate_grid.ordered_fret_lines:
             return None

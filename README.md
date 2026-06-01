@@ -2,22 +2,36 @@
 
 `best06.pt` 가중치를 사용해서 웹캠 영상 위에 기타 지판 관련 검출 결과를 그려주는 `PySide6` 데스크톱 앱입니다.
 
+## 설치
+
+이 프로젝트는 `uv` 기준으로 의존성을 관리합니다.
+
+```bash
+uv sync --frozen
+```
+
 ## 실행
 
 ```bash
-python3 pyside_fretboard_detector.py
+uv run python pyside_fretboard_detector.py
 ```
 
 다른 가중치를 쓰고 싶으면:
 
 ```bash
-python3 pyside_fretboard_detector.py --model /absolute/path/to/model.pt --camera 0
+uv run python pyside_fretboard_detector.py --model /absolute/path/to/model.pt --camera 0
 ```
 
 카메라 보정 파일이 있으면:
 
 ```bash
-python3 pyside_fretboard_detector.py --camera-calibration /absolute/path/to/camera_calibration.npz
+uv run python pyside_fretboard_detector.py --camera-calibration /absolute/path/to/camera_calibration.npz
+```
+
+## 테스트
+
+```bash
+uv run pytest
 ```
 
 ## 기능
@@ -30,7 +44,8 @@ python3 pyside_fretboard_detector.py --camera-calibration /absolute/path/to/came
 - 선택 상태에서는 마지막 사각형 주변 ROI를 우선 탐색하고, 필요하면 전체 프레임으로 자동 재획득
 - 검출이 잠깐 흔들려도 즉시 해제하지 않고 `hold -> reacquire` 방식으로 안정화
 - 수동 선택 추적은 선택 시점의 `마지막 가시 프렛` 번호를 자동 추정한 뒤 그 기준을 잠가서 추적
-- 선택한 기준 프렛 번호에서는 기준선과 실제 간격 모델을 유지하되, 음 점 후보는 실제 검출/확정된 인접 프렛 경계 사이에만 표시
+- 수동 선택 추적 중 현재 프레임의 fret 후보가 여러 개 보이면, 기준선 모양보다 `neck 방향 최외곽 fret`을 현재 마지막 가시 프렛 후보로 우선 사용
+- 선택한 기준 프렛 번호에서는 기준선과 실제 간격 모델을 유지하되, 음 점 후보는 현재 프레임에서 YOLO로 검출/확정된 인접 프렛 경계 사이에만 표시
 - 자동 모드도 visible fret 여러 개를 실제 프렛선 기준으로 유지하면서 note 좌표를 안정화
 - 음 선택 `없음, 도, 레, 미, 파, 솔, 라, 시, 높은 도`
 - `중앙 테스트 점` 토글을 켜면 선택한 음을 지판 중앙선 위 단일 점으로 표시
@@ -45,6 +60,7 @@ python3 pyside_fretboard_detector.py --camera-calibration /absolute/path/to/came
 ## 참고
 
 - macOS에서는 처음 실행 시 카메라 권한 허용이 필요할 수 있습니다.
+- Python 버전과 잠금된 의존성은 `pyproject.toml`, `uv.lock` 기준으로 관리합니다.
 - 현재 모델은 `PoseModel`로 인식되며, 각 검출 결과에 2개의 키포인트를 함께 그리도록 구성했습니다.
 - 손끝 검출은 `mediapipe`가 설치된 경우 자동 활성화됩니다. 설치되지 않으면 앱은 계속 동작하지만 손 검출만 비활성화됩니다.
 - 손 landmark 모델은 프로젝트의 [models/hand_landmarker.task](/Users/kjw/Desktop/01.Project/capstone/guitar_fret_test/models/hand_landmarker.task) 를 사용합니다.
