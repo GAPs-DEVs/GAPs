@@ -5,13 +5,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from demo_pipeline import RotV2DemoPipeline
+from demo_pipeline import DemoPipeline
 from tools.valid.valid_module import ValidLoader, ValidResultManager
 
 
 def main() -> None:
     # Step 1. 예측 파이프라인 준비
-    pipeline = RotV2DemoPipeline()
+    pipeline = DemoPipeline()
 
     # Step 2. 검증 데이터셋 준비
     loader = ValidLoader()
