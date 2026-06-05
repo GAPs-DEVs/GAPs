@@ -23,6 +23,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+VALID_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATASET = VALID_ROOT / "ds"
+DEFAULT_RESULT_DIR = VALID_ROOT / "result"
 
 __all__ = [
     "GuidePoint",
@@ -33,8 +36,6 @@ __all__ = [
 ]
 
 
-DEFAULT_DATASET = Path("tools/valid/ds")
-DEFAULT_RESULT_DIR = Path("tools/valid/result")
 DEFAULT_PRINT_EVERY = 100
 GT_POINT_COLOR = (80, 220, 80)
 PRED_POINT_COLOR = (0, 210, 255)
@@ -157,6 +158,10 @@ class AnswerPoints:
         return float(np.hypot(pred_point.x - gt_point.x, pred_point.y - gt_point.y))
 
     def _check_points(self, pred_points: list[GuidePoint]) -> _CheckResult:
+        # 비교 규칙은 단순합니다.
+        # - GT와 Pred를 (string, fret) 키로 맵핑합니다.
+        # - 같은 키가 양쪽에 다 있을 때만 거리 계산을 합니다.
+        # - 즉 (1,1)은 (1,1)과만, (1,2)는 (1,2)와만 비교합니다.
         gt_map = self._point_map(self.points)
         pred_map = self._point_map(pred_points)
         shared_keys = sorted(set(gt_map.keys()) & set(pred_map.keys()))
@@ -811,12 +816,18 @@ class ValidationApp:
             self.manager.frames,
             self.frame_cache,
         )
+        frame_window.move(80, 80)
         frame_window.show()
+        frame_window.raise_()
+        frame_window.activateWindow()
         print("Frame slider window created.", flush=True)
 
         print("Creating report window...", flush=True)
         report_window = _ReportWindow(report_image)
+        report_window.move(220, 120)
         report_window.show()
+        report_window.raise_()
+        report_window.activateWindow()
         print("Report window created.", flush=True)
 
         if owns_app:
