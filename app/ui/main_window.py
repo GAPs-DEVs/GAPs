@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import json
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QImage
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
 
 from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH
 from app.features.audio_devices import enumerate_audio_input_devices
@@ -26,6 +28,9 @@ from vision.fretboard_mapping import (
     StableFretboardGrid,
     infer_selected_reference_fret_index,
 )
+
+from pages.select_page import SelectPage
+from pages.admin_page import AdminPage
 
 
 STATUS_TEXT = {
@@ -55,6 +60,7 @@ class MainWindow(QMainWindow):
         self.model_path = model_path
         self.score_path = score_path
         self.camera_calibration = camera_calibration
+
         self.practice_steps = build_practice_steps_from_json(score_path)
         if not self.practice_steps:
             raise ValueError("score JSON must contain at least one practice step.")
@@ -136,13 +142,61 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
         root_layout.addWidget(self.video_label, stretch=1)
         root_layout.addWidget(self._build_side_panel())
-        self.setCentralWidget(root)
+
+        self.stacked_widget = QStackedWidget(self)
+        self.setCentralWidget(self.stacked_widget)
+
+        self.select_page = SelectPage(main_window=self)  # Index 0 
+        self.admin_page = AdminPage(main_window=self)    # Index 2 
+
+        # 복조된 팀원분 오리지널 패널(root)을 스택의 Index 1로 통째로 안착
+        self.stacked_widget.addWidget(self.select_page)
+        self.stacked_widget.addWidget(root)
+        self.stacked_widget.addWidget(self.admin_page)
 
         self.populate_camera_list(selected=camera_index)
         self.populate_microphone_list()
         self.retrigger_gate.configure(None, self.current_step())
         self.refresh_practice_display()
         self.refresh_marker_status()
+
+    # 악보 보드 연동 커넥터 구현
+    def switch_to_practice(self, json_path: str):
+        self.score_path = Path(json_path)
+        steps = build_practice_steps_from_json(self.score_path)
+        if not steps:
+            QMessageBox.warning(self, "데이터 오류", "선택한 악보의 정형 시퀀스가 비어있습니다.")
+            return
+            
+        self.practice_steps = steps
+        self.current_index = 0
+        self.retrigger_gate.configure(None, self.current_step())
+        self.refresh_practice_display()
+        self.stacked_widget.setCurrentIndex(1) # 오리지널 연습 화면(Index 1) 가동
+
+    def switch_to_admin(self, json_path: str):
+        self.score_path = Path(json_path)
+        
+        # 1. 에디터 페이지의 현재 파일 경로 및 데이터 상태를 강제로 동기화
+        self.admin_page.current_file_path = json_path
+        self.admin_page.file_status.setText(f"📂 로드된 파일: {os.path.basename(json_path)}")
+        
+        try:
+            # 2. 에디터 내부의 메모리 데이터셋 채우기 및 정렬
+            with open(json_path, 'r', encoding='utf-8') as f:
+                self.admin_page.tab_data = json.load(f)
+            self.admin_page.tab_data.sort(key=lambda x: (x.get('step', 0), x.get('string', 0)))
+            
+            # 3. 에디터 상단의 지판 시트 뷰와 하단 테이블 리프레시 가동
+            self.admin_page.tab_sheet_view.set_data(self.admin_page.tab_data)
+            self.admin_page.scroll_area.setWidget(self.admin_page.tab_sheet_view)
+            self.admin_page.refresh_table()
+            
+            # 4. 모든 바인딩이 끝나면 화면 스택을 '정밀 교정 에디터(Index 2)'로 즉시 워프!
+            self.stacked_widget.setCurrentIndex(2)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"에디터 다이렉트 로드 실패: {e}")
 
     def _build_side_panel(self) -> QWidget:
         panel = QWidget()
@@ -153,6 +207,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.camera_panel)
         layout.addWidget(self.tracking_panel)
         layout.addWidget(self.practice_panel)
+        
+        # +) UI를 전혀 해치지 않고 맨 밑에 홈 복귀 버튼만 추가 배치
+        btn_home = QPushButton("메인 화면으로 이동")
+        btn_home.setCursor(Qt.PointingHandCursor)
+        btn_home.setFixedHeight(45)
+        btn_home.setStyleSheet("""
+            QPushButton { 
+                background-color: #333333; 
+                color: white; 
+                font-weight: bold; 
+                border-radius: 6px; 
+                font-size: 14px; 
+                border: none;
+            }
+            QPushButton:hover { background-color: #555555; }
+        """)
+        # 복귀 시 오디오 캡처와 카메라 스레드를 완벽히 정지시키고 홈으로 안전 이동
+        btn_home.clicked.connect(lambda: (self.stop_practice(), self.stop_video(), self.stacked_widget.setCurrentIndex(0)))
+        layout.addWidget(btn_home)
+
         layout.addStretch(1)
         return panel
 
