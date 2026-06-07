@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from practice.score_steps import (
+    DEFAULT_STEP_DURATION_MS,
     build_practice_steps,
     build_practice_steps_from_json,
     load_parsed_notes_from_json,
@@ -31,6 +32,23 @@ class ScoreStepTests(unittest.TestCase):
         self.assertEqual(steps[1].mode, "single")
         self.assertEqual([note.label for note in steps[0].notes], ["1번줄 7프렛", "6번줄 0프렛"])
 
+    def test_build_practice_steps_preserves_step_duration_ms(self) -> None:
+        parsed_notes = [
+            {"step": 1, "string": 1, "fret": 7, "duration_ms": 230},
+            {"step": 1, "string": 6, "fret": 0, "duration_ms": 260},
+            {"step": 2, "string": 2, "fret": 0, "duration_ms": 115},
+        ]
+
+        steps = build_practice_steps(parsed_notes)
+
+        self.assertEqual(steps[0].duration_ms, 260)
+        self.assertEqual(steps[1].duration_ms, 115)
+
+    def test_build_practice_steps_uses_default_duration_when_missing(self) -> None:
+        steps = build_practice_steps([{"step": 1, "string": 1, "fret": 7}])
+
+        self.assertEqual(steps[0].duration_ms, DEFAULT_STEP_DURATION_MS)
+
     def test_build_practice_steps_converts_string_and_fret_to_frequency(self) -> None:
         steps = build_practice_steps([{"step": 1, "string": 1, "fret": 5}])
 
@@ -43,6 +61,10 @@ class ScoreStepTests(unittest.TestCase):
     def test_build_practice_steps_rejects_invalid_step(self) -> None:
         with self.assertRaises(ValueError):
             build_practice_steps([{"step": 0, "string": 1, "fret": 0}])
+
+    def test_build_practice_steps_rejects_invalid_duration(self) -> None:
+        with self.assertRaises(ValueError):
+            build_practice_steps([{"step": 1, "string": 1, "fret": 0, "duration_ms": 0}])
 
     def test_load_parsed_notes_from_json_accepts_top_level_list(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
