@@ -1,6 +1,9 @@
 [
   {
     "step": 1,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 1,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -8,6 +11,9 @@
   },
   {
     "step": 1,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 1,
     "string": 6,
     "fret": 0,
     "duration_ms": 230,
@@ -15,6 +21,9 @@
   },
   {
     "step": 2,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 2,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -22,6 +31,9 @@
   },
   {
     "step": 3,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 3,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -29,6 +41,9 @@
   },
   {
     "step": 4,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 4,
     "string": 1,
     "fret": 5,
     "duration_ms": 230,
@@ -36,6 +51,9 @@
   },
   {
     "step": 5,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 5,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -43,6 +61,9 @@
   },
   {
     "step": 6,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 6,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -50,6 +71,9 @@
   },
   {
     "step": 7,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 7,
     "string": 1,
     "fret": 3,
     "duration_ms": 230,
@@ -57,6 +81,9 @@
   },
   {
     "step": 8,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 8,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -64,6 +91,9 @@
   },
   {
     "step": 9,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 1,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -71,6 +101,9 @@
   },
   {
     "step": 10,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 2,
     "string": 1,
     "fret": 3,
     "duration_ms": 230,
@@ -78,6 +111,9 @@
   },
   {
     "step": 10,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 2,
     "string": 6,
     "fret": 0,
     "duration_ms": 230,
@@ -85,6 +121,9 @@
   },
   {
     "step": 11,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 3,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -92,6 +131,9 @@
   },
   {
     "step": 12,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 4,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -99,6 +141,9 @@
   },
   {
     "step": 13,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 5,
     "string": 1,
     "fret": 2,
     "duration_ms": 230,
@@ -106,6 +151,9 @@
   },
   {
     "step": 14,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 6,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -113,6 +161,9 @@
   },
   {
     "step": 15,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 7,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -120,6 +171,9 @@
   },
   {
     "step": 16,
+    "score_line": 1,
+    "measure": 2,
+    "beat": 8,
     "string": 1,
     "fret": 0,
     "duration_ms": 230,
@@ -127,6 +181,9 @@
   },
   {
     "step": 17,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 1,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -134,6 +191,9 @@
   },
   {
     "step": 18,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 2,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -141,6 +201,9 @@
   },
   {
     "step": 19,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 3,
     "string": 1,
     "fret": 0,
     "duration_ms": 230,
@@ -148,6 +211,9 @@
   },
   {
     "step": 19,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 3,
     "string": 6,
     "fret": 0,
     "duration_ms": 230,
@@ -155,6 +221,9 @@
   },
   {
     "step": 20,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 4,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -162,6 +231,9 @@
   },
   {
     "step": 21,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 5,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -169,6 +241,9 @@
   },
   {
     "step": 22,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 6,
     "string": 1,
     "fret": 3,
     "duration_ms": 230,
@@ -176,6 +251,9 @@
   },
   {
     "step": 23,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 7,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -183,6 +261,9 @@
   },
   {
     "step": 24,
+    "score_line": 1,
+    "measure": 3,
+    "beat": 8,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -190,6 +271,9 @@
   },
   {
     "step": 25,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 1,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -197,6 +281,9 @@
   },
   {
     "step": 26,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 2,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -204,6 +291,9 @@
   },
   {
     "step": 27,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 3,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -211,6 +301,9 @@
   },
   {
     "step": 28,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 4,
     "string": 1,
     "fret": 12,
     "duration_ms": 230,
@@ -218,6 +311,9 @@
   },
   {
     "step": 28,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 4,
     "string": 6,
     "fret": 0,
     "duration_ms": 230,
@@ -225,6 +321,9 @@
   },
   {
     "step": 29,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 5,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -232,6 +331,9 @@
   },
   {
     "step": 30,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 6,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -239,6 +341,9 @@
   },
   {
     "step": 31,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 7,
     "string": 1,
     "fret": 12,
     "duration_ms": 230,
@@ -246,6 +351,9 @@
   },
   {
     "step": 32,
+    "score_line": 1,
+    "measure": 4,
+    "beat": 8,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -253,6 +361,9 @@
   },
   {
     "step": 33,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 1,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -260,6 +371,9 @@
   },
   {
     "step": 34,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 2,
     "string": 1,
     "fret": 12,
     "duration_ms": 230,
@@ -267,6 +381,9 @@
   },
   {
     "step": 35,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 3,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -274,6 +391,9 @@
   },
   {
     "step": 36,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 4,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -281,6 +401,9 @@
   },
   {
     "step": 37,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 5,
     "string": 1,
     "fret": 12,
     "duration_ms": 230,
@@ -288,6 +411,9 @@
   },
   {
     "step": 37,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 5,
     "string": 6,
     "fret": 0,
     "duration_ms": 230,
@@ -295,6 +421,9 @@
   },
   {
     "step": 38,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 6,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -302,6 +431,9 @@
   },
   {
     "step": 39,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 7,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -309,6 +441,9 @@
   },
   {
     "step": 40,
+    "score_line": 2,
+    "measure": 5,
+    "beat": 8,
     "string": 1,
     "fret": 10,
     "duration_ms": 230,
@@ -316,6 +451,9 @@
   },
   {
     "step": 41,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 1,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -323,6 +461,9 @@
   },
   {
     "step": 42,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 2,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -330,6 +471,9 @@
   },
   {
     "step": 43,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 3,
     "string": 1,
     "fret": 8,
     "duration_ms": 230,
@@ -337,6 +481,9 @@
   },
   {
     "step": 44,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 4,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -344,6 +491,9 @@
   },
   {
     "step": 45,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 5,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -351,6 +501,9 @@
   },
   {
     "step": 46,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 6,
     "string": 1,
     "fret": 8,
     "duration_ms": 230,
@@ -358,6 +511,9 @@
   },
   {
     "step": 46,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 6,
     "string": 5,
     "fret": 0,
     "duration_ms": 230,
@@ -365,6 +521,9 @@
   },
   {
     "step": 47,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 7,
     "string": 2,
     "fret": 5,
     "duration_ms": 230,
@@ -372,6 +531,9 @@
   },
   {
     "step": 48,
+    "score_line": 2,
+    "measure": 6,
+    "beat": 8,
     "string": 3,
     "fret": 5,
     "duration_ms": 230,
@@ -379,6 +541,9 @@
   },
   {
     "step": 49,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 1,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -386,6 +551,9 @@
   },
   {
     "step": 50,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 2,
     "string": 2,
     "fret": 5,
     "duration_ms": 230,
@@ -393,6 +561,9 @@
   },
   {
     "step": 51,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 3,
     "string": 3,
     "fret": 5,
     "duration_ms": 230,
@@ -400,6 +571,9 @@
   },
   {
     "step": 52,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 4,
     "string": 1,
     "fret": 5,
     "duration_ms": 230,
@@ -407,6 +581,9 @@
   },
   {
     "step": 53,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 5,
     "string": 2,
     "fret": 5,
     "duration_ms": 230,
@@ -414,6 +591,9 @@
   },
   {
     "step": 54,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 6,
     "string": 3,
     "fret": 5,
     "duration_ms": 230,
@@ -421,6 +601,9 @@
   },
   {
     "step": 55,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 7,
     "string": 1,
     "fret": 5,
     "duration_ms": 230,
@@ -428,6 +611,9 @@
   },
   {
     "step": 55,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 7,
     "string": 5,
     "fret": 0,
     "duration_ms": 230,
@@ -435,6 +621,9 @@
   },
   {
     "step": 56,
+    "score_line": 2,
+    "measure": 7,
+    "beat": 8,
     "string": 2,
     "fret": 5,
     "duration_ms": 230,
@@ -442,6 +631,9 @@
   },
   {
     "step": 57,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 1,
     "string": 3,
     "fret": 5,
     "duration_ms": 230,
@@ -449,6 +641,9 @@
   },
   {
     "step": 58,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 2,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -456,6 +651,9 @@
   },
   {
     "step": 59,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 3,
     "string": 2,
     "fret": 5,
     "duration_ms": 230,
@@ -463,6 +661,9 @@
   },
   {
     "step": 60,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 4,
     "string": 3,
     "fret": 5,
     "duration_ms": 230,
@@ -470,6 +671,9 @@
   },
   {
     "step": 61,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 5,
     "string": 1,
     "fret": 8,
     "duration_ms": 230,
@@ -477,6 +681,9 @@
   },
   {
     "step": 62,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 6,
     "string": 2,
     "fret": 5,
     "duration_ms": 230,
@@ -484,6 +691,9 @@
   },
   {
     "step": 63,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 7,
     "string": 3,
     "fret": 5,
     "duration_ms": 230,
@@ -491,6 +701,9 @@
   },
   {
     "step": 64,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 8,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -498,6 +711,9 @@
   },
   {
     "step": 64,
+    "score_line": 2,
+    "measure": 8,
+    "beat": 8,
     "string": 6,
     "fret": 7,
     "duration_ms": 230,
@@ -505,6 +721,9 @@
   },
   {
     "step": 65,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 1,
     "string": 2,
     "fret": 7,
     "duration_ms": 230,
@@ -512,6 +731,9 @@
   },
   {
     "step": 66,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 2,
     "string": 3,
     "fret": 8,
     "duration_ms": 230,
@@ -519,6 +741,9 @@
   },
   {
     "step": 67,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 3,
     "string": 1,
     "fret": 8,
     "duration_ms": 230,
@@ -526,6 +751,9 @@
   },
   {
     "step": 68,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 4,
     "string": 2,
     "fret": 7,
     "duration_ms": 230,
@@ -533,6 +761,9 @@
   },
   {
     "step": 69,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 5,
     "string": 3,
     "fret": 8,
     "duration_ms": 230,
@@ -540,6 +771,9 @@
   },
   {
     "step": 70,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 6,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -547,6 +781,9 @@
   },
   {
     "step": 71,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 7,
     "string": 2,
     "fret": 7,
     "duration_ms": 230,
@@ -554,6 +791,9 @@
   },
   {
     "step": 72,
+    "score_line": 3,
+    "measure": 9,
+    "beat": 8,
     "string": 3,
     "fret": 8,
     "duration_ms": 230,
@@ -561,6 +801,9 @@
   },
   {
     "step": 73,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 1,
     "string": 1,
     "fret": 11,
     "duration_ms": 230,
@@ -568,6 +811,9 @@
   },
   {
     "step": 73,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 1,
     "string": 6,
     "fret": 7,
     "duration_ms": 230,
@@ -575,6 +821,9 @@
   },
   {
     "step": 74,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 2,
     "string": 2,
     "fret": 7,
     "duration_ms": 230,
@@ -582,6 +831,9 @@
   },
   {
     "step": 75,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 3,
     "string": 3,
     "fret": 8,
     "duration_ms": 230,
@@ -589,6 +841,9 @@
   },
   {
     "step": 76,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 4,
     "string": 1,
     "fret": 8,
     "duration_ms": 230,
@@ -596,6 +851,9 @@
   },
   {
     "step": 77,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 5,
     "string": 2,
     "fret": 7,
     "duration_ms": 230,
@@ -603,6 +861,9 @@
   },
   {
     "step": 78,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 6,
     "string": 3,
     "fret": 8,
     "duration_ms": 230,
@@ -610,6 +871,9 @@
   },
   {
     "step": 79,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 7,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -617,6 +881,9 @@
   },
   {
     "step": 80,
+    "score_line": 3,
+    "measure": 10,
+    "beat": 8,
     "string": 2,
     "fret": 7,
     "duration_ms": 230,
@@ -624,6 +891,9 @@
   },
   {
     "step": 81,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 1,
     "string": 3,
     "fret": 8,
     "duration_ms": 230,
@@ -631,6 +901,9 @@
   },
   {
     "step": 82,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 2,
     "string": 1,
     "fret": 7,
     "duration_ms": 230,
@@ -638,6 +911,9 @@
   },
   {
     "step": 82,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 2,
     "string": 6,
     "fret": 0,
     "duration_ms": 230,
@@ -645,6 +921,9 @@
   },
   {
     "step": 83,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 3,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -652,6 +931,9 @@
   },
   {
     "step": 84,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 4,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -659,6 +941,9 @@
   },
   {
     "step": 85,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 5,
     "string": 1,
     "fret": 5,
     "duration_ms": 230,
@@ -666,6 +951,9 @@
   },
   {
     "step": 86,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 6,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -673,6 +961,9 @@
   },
   {
     "step": 87,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 7,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -680,6 +971,9 @@
   },
   {
     "step": 88,
+    "score_line": 3,
+    "measure": 11,
+    "beat": 8,
     "string": 1,
     "fret": 3,
     "duration_ms": 230,
@@ -687,6 +981,9 @@
   },
   {
     "step": 89,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 1,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -694,6 +991,9 @@
   },
   {
     "step": 90,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 2,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -701,6 +1001,9 @@
   },
   {
     "step": 91,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 3,
     "string": 1,
     "fret": 3,
     "duration_ms": 230,
@@ -708,6 +1011,9 @@
   },
   {
     "step": 91,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 3,
     "string": 6,
     "fret": 0,
     "duration_ms": 230,
@@ -715,6 +1021,9 @@
   },
   {
     "step": 92,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 4,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -722,6 +1031,9 @@
   },
   {
     "step": 93,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 5,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -729,6 +1041,9 @@
   },
   {
     "step": 94,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 6,
     "string": 1,
     "fret": 2,
     "duration_ms": 230,
@@ -736,6 +1051,9 @@
   },
   {
     "step": 95,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 7,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -743,6 +1061,9 @@
   },
   {
     "step": 96,
+    "score_line": 3,
+    "measure": 12,
+    "beat": 8,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -750,6 +1071,9 @@
   },
   {
     "step": 97,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 1,
     "string": 1,
     "fret": 0,
     "duration_ms": 230,
@@ -757,6 +1081,9 @@
   },
   {
     "step": 98,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 2,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -764,6 +1091,9 @@
   },
   {
     "step": 99,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 3,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -771,6 +1101,9 @@
   },
   {
     "step": 100,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 4,
     "string": 1,
     "fret": 2,
     "duration_ms": 230,
@@ -778,6 +1111,9 @@
   },
   {
     "step": 100,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 4,
     "string": 4,
     "fret": 2,
     "duration_ms": 230,
@@ -785,6 +1121,9 @@
   },
   {
     "step": 101,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 5,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -792,6 +1131,9 @@
   },
   {
     "step": 102,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 6,
     "string": 3,
     "fret": 2,
     "duration_ms": 230,
@@ -799,6 +1141,9 @@
   },
   {
     "step": 103,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 7,
     "string": 1,
     "fret": 2,
     "duration_ms": 230,
@@ -806,6 +1151,9 @@
   },
   {
     "step": 104,
+    "score_line": 4,
+    "measure": 13,
+    "beat": 8,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -813,6 +1161,9 @@
   },
   {
     "step": 105,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 1,
     "string": 3,
     "fret": 2,
     "duration_ms": 230,
@@ -820,6 +1171,9 @@
   },
   {
     "step": 106,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 2,
     "string": 1,
     "fret": 2,
     "duration_ms": 230,
@@ -827,6 +1181,9 @@
   },
   {
     "step": 107,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 3,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -834,6 +1191,9 @@
   },
   {
     "step": 108,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 4,
     "string": 3,
     "fret": 2,
     "duration_ms": 230,
@@ -841,6 +1201,9 @@
   },
   {
     "step": 109,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 5,
     "string": 1,
     "fret": 2,
     "duration_ms": 230,
@@ -848,6 +1211,9 @@
   },
   {
     "step": 109,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 5,
     "string": 4,
     "fret": 1,
     "duration_ms": 230,
@@ -855,6 +1221,9 @@
   },
   {
     "step": 110,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 6,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -862,6 +1231,9 @@
   },
   {
     "step": 111,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 7,
     "string": 3,
     "fret": 2,
     "duration_ms": 230,
@@ -869,6 +1241,9 @@
   },
   {
     "step": 112,
+    "score_line": 4,
+    "measure": 14,
+    "beat": 8,
     "string": 1,
     "fret": 3,
     "duration_ms": 230,
@@ -876,6 +1251,9 @@
   },
   {
     "step": 113,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 1,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -883,6 +1261,9 @@
   },
   {
     "step": 114,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 2,
     "string": 3,
     "fret": 2,
     "duration_ms": 230,
@@ -890,6 +1271,9 @@
   },
   {
     "step": 115,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 3,
     "string": 1,
     "fret": 2,
     "duration_ms": 230,
@@ -897,6 +1281,9 @@
   },
   {
     "step": 116,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 4,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -904,6 +1291,9 @@
   },
   {
     "step": 117,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 5,
     "string": 3,
     "fret": 2,
     "duration_ms": 230,
@@ -911,6 +1301,9 @@
   },
   {
     "step": 118,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 6,
     "string": 1,
     "fret": 0,
     "duration_ms": 230,
@@ -918,6 +1311,9 @@
   },
   {
     "step": 118,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 6,
     "string": 4,
     "fret": 2,
     "duration_ms": 230,
@@ -925,6 +1321,9 @@
   },
   {
     "step": 119,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 7,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -932,6 +1331,9 @@
   },
   {
     "step": 120,
+    "score_line": 4,
+    "measure": 15,
+    "beat": 8,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -939,6 +1341,9 @@
   },
   {
     "step": 121,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 1,
     "string": 1,
     "fret": 0,
     "duration_ms": 230,
@@ -946,6 +1351,9 @@
   },
   {
     "step": 121,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 1,
     "string": 5,
     "fret": 2,
     "duration_ms": 230,
@@ -953,6 +1361,9 @@
   },
   {
     "step": 122,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 2,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -960,6 +1371,9 @@
   },
   {
     "step": 123,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 3,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -967,6 +1381,9 @@
   },
   {
     "step": 124,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 4,
     "string": 1,
     "fret": 0,
     "duration_ms": 230,
@@ -974,6 +1391,9 @@
   },
   {
     "step": 124,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 4,
     "string": 6,
     "fret": 3,
     "duration_ms": 230,
@@ -981,6 +1401,9 @@
   },
   {
     "step": 125,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 5,
     "string": 2,
     "fret": 0,
     "duration_ms": 230,
@@ -988,6 +1411,9 @@
   },
   {
     "step": 126,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 6,
     "string": 3,
     "fret": 0,
     "duration_ms": 230,
@@ -995,6 +1421,9 @@
   },
   {
     "step": 127,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 7,
     "string": 6,
     "fret": 0,
     "duration_ms": 115,
@@ -1002,6 +1431,9 @@
   },
   {
     "step": 128,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 8,
     "string": 3,
     "fret": 0,
     "duration_ms": 115,
@@ -1009,6 +1441,9 @@
   },
   {
     "step": 129,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 9,
     "string": 2,
     "fret": 0,
     "duration_ms": 115,
@@ -1016,6 +1451,9 @@
   },
   {
     "step": 130,
+    "score_line": 4,
+    "measure": 16,
+    "beat": 10,
     "string": 1,
     "fret": 0,
     "duration_ms": 115,

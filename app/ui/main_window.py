@@ -14,11 +14,13 @@ from app.features.practice_audio import PracticeAudioController, RetriggerGate, 
 from app.features.video import PracticeFrameStats, PracticeVideoWorker
 from app.ui.camera_panel import CameraPanel
 from app.ui.practice_panel import PracticePanel
+from app.ui.tab_sheet_view import PracticeTabStrip
 from app.ui.tracking_panel import TrackingPanel
 from app.ui.video_surface import VideoSurface
 from practice.score_steps import (
     PracticeStep,
     build_practice_steps_from_json,
+    load_parsed_notes_from_json,
 )
 from tools.fretboard_detection_viewer import enumerate_camera_indices, find_nearest_line
 from vision.camera_calibration import CameraCalibration
@@ -90,6 +92,7 @@ class MainWindow(QMainWindow):
 
         self.video_label = VideoSurface("카메라를 시작하면 기타 지판 위에 연습할 위치가 표시됩니다.")
         self.video_label.clicked.connect(self.handle_video_click)
+        self.practice_tab_strip = PracticeTabStrip()
 
         self.camera_panel = CameraPanel()
         self.camera_combo = self.camera_panel.camera_combo
@@ -142,7 +145,15 @@ class MainWindow(QMainWindow):
         root_layout = QHBoxLayout(root)
         root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(10)
-        root_layout.addWidget(self.video_label, stretch=1)
+
+        video_column = QWidget()
+        video_column_layout = QVBoxLayout(video_column)
+        video_column_layout.setContentsMargins(0, 0, 0, 0)
+        video_column_layout.setSpacing(8)
+        video_column_layout.addWidget(self.video_label, stretch=1)
+        video_column_layout.addWidget(self.practice_tab_strip)
+
+        root_layout.addWidget(video_column, stretch=1)
         root_layout.addWidget(self._build_side_panel())
 
         self.stacked_widget = QStackedWidget(self)
@@ -158,6 +169,7 @@ class MainWindow(QMainWindow):
 
         self.populate_camera_list(selected=camera_index)
         self.populate_microphone_list()
+        self.refresh_practice_tab_data()
         self.retrigger_gate.configure(None, self.current_step())
         self.refresh_auto_speed_controls()
         self.refresh_practice_display()
@@ -173,6 +185,7 @@ class MainWindow(QMainWindow):
             
         self.practice_steps = steps
         self.current_index = 0
+        self.refresh_practice_tab_data()
         self.retrigger_gate.configure(None, self.current_step())
         self.refresh_practice_display()
         self.stacked_widget.setCurrentIndex(1) # 오리지널 연습 화면(Index 1) 가동
@@ -401,6 +414,12 @@ class MainWindow(QMainWindow):
         self.practice_panel.set_auto_speed_controls_visible(is_auto_mode)
         self.auto_speed_value_label.setText(f"{self.current_auto_speed_multiplier():.2f}x")
 
+    def refresh_practice_tab_data(self) -> None:
+        try:
+            self.practice_tab_strip.set_data(load_parsed_notes_from_json(self.score_path))
+        except Exception:
+            self.practice_tab_strip.set_data([])
+
     def begin_line_selection(self) -> None:
         if self.video_worker is None or not self.video_worker.isRunning():
             QMessageBox.information(self, "카메라 필요", "카메라를 먼저 시작해주세요.")
@@ -487,6 +506,7 @@ class MainWindow(QMainWindow):
         mode_text = "단일음" if step.mode == "single" else "다중음"
         self.progress_label.setText(f"{self.current_index + 1} / {len(self.practice_steps)} (step {step.step}, {mode_text})")
         self.expected_label.setText(", ".join(f"{note.label} {note.frequency:.2f}Hz" for note in step.notes))
+        self.practice_tab_strip.set_current_step(step.step)
         if self.practice_running and self.current_mode() == "auto":
             self.practice_status_label.setText(STATUS_TEXT["auto"])
         elif self.practice_running:
