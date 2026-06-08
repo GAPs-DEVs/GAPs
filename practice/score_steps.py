@@ -11,11 +11,15 @@ from audio.music_math import guitar_note_frequency
 from audio.polyphonic_detection import ExpectedFrequency
 
 
+DEFAULT_STEP_DURATION_MS = 500
+
+
 @dataclass(frozen=True)
 class ParsedPracticeNote:
     step: int
     string_number: int
     fret_number: int
+    duration_ms: int
     frequency: float
     label: str
 
@@ -25,6 +29,7 @@ class PracticeStep:
     step: int
     notes: tuple[ParsedPracticeNote, ...]
     expected_frequencies: tuple[ExpectedFrequency, ...]
+    duration_ms: int
 
     @property
     def mode(self) -> str:
@@ -45,6 +50,7 @@ def build_practice_steps(parsed_notes: Iterable[Mapping[str, object]]) -> list[P
     practice_steps: list[PracticeStep] = []
     for step in sorted(grouped):
         notes = tuple(grouped[step])
+        duration_ms = max(note.duration_ms for note in notes)
         expected_frequencies = tuple(
             ExpectedFrequency(name=note.label, frequency=note.frequency)
             for note in notes
@@ -54,6 +60,7 @@ def build_practice_steps(parsed_notes: Iterable[Mapping[str, object]]) -> list[P
                 step=step,
                 notes=notes,
                 expected_frequencies=expected_frequencies,
+                duration_ms=duration_ms,
             )
         )
 
@@ -120,12 +127,26 @@ def _parse_practice_note(raw_note: Mapping[str, object]) -> ParsedPracticeNote:
     if fret_number < 0:
         raise ValueError("fret must be greater than or equal to 0.")
 
+    duration_ms = _parse_duration_ms(raw_note)
     frequency = guitar_note_frequency(string_number, fret_number)
     label = f"{string_number}번줄 {fret_number}프렛"
     return ParsedPracticeNote(
         step=step,
         string_number=string_number,
         fret_number=fret_number,
+        duration_ms=duration_ms,
         frequency=frequency,
         label=label,
     )
+
+
+def _parse_duration_ms(raw_note: Mapping[str, object]) -> int:
+    raw_duration = raw_note.get("duration_ms", DEFAULT_STEP_DURATION_MS)
+    try:
+        duration_ms = int(raw_duration)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid duration_ms value: {raw_duration}") from exc
+
+    if duration_ms < 1:
+        raise ValueError("duration_ms must be greater than or equal to 1.")
+    return duration_ms

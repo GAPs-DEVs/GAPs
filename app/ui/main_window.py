@@ -85,6 +85,7 @@ class MainWindow(QMainWindow):
         self.interactive_advance_timer.setSingleShot(True)
         self.interactive_advance_timer.timeout.connect(self._handle_interactive_advance_timeout)
         self.auto_flow_timer = QTimer(self)
+        self.auto_flow_timer.setSingleShot(True)
         self.auto_flow_timer.timeout.connect(self._handle_auto_flow_tick)
 
         self.video_label = VideoSurface("카메라를 시작하면 기타 지판 위에 연습할 위치가 표시됩니다.")
@@ -118,8 +119,9 @@ class MainWindow(QMainWindow):
         self.refresh_microphone_button.clicked.connect(lambda: self.populate_microphone_list())
         self.mode_combo = self.practice_panel.mode_combo
         self.mode_combo.currentIndexChanged.connect(self.handle_mode_change)
-        self.bpm_spin = self.practice_panel.bpm_spin
-        self.bpm_spin.valueChanged.connect(self.handle_bpm_change)
+        self.auto_speed_slider = self.practice_panel.auto_speed_slider
+        self.auto_speed_slider.valueChanged.connect(self.handle_auto_speed_change)
+        self.auto_speed_value_label = self.practice_panel.auto_speed_value_label
         self.start_practice_button = self.practice_panel.start_button
         self.stop_practice_button = self.practice_panel.stop_button
         self.prev_step_button = self.practice_panel.prev_button
@@ -157,6 +159,7 @@ class MainWindow(QMainWindow):
         self.populate_camera_list(selected=camera_index)
         self.populate_microphone_list()
         self.retrigger_gate.configure(None, self.current_step())
+        self.refresh_auto_speed_controls()
         self.refresh_practice_display()
         self.refresh_marker_status()
 
@@ -236,6 +239,9 @@ class MainWindow(QMainWindow):
     def current_mode(self) -> str:
         return str(self.mode_combo.currentData() or "interactive")
 
+    def current_auto_speed_multiplier(self) -> float:
+        return max(0.01, self.auto_speed_slider.value() / 100.0)
+
     def current_microphone_device(self) -> int | str | None:
         return self.microphone_combo.currentData()
 
@@ -288,15 +294,17 @@ class MainWindow(QMainWindow):
             self.video_worker.set_reference_fret_index(int(value))
 
     def handle_mode_change(self, _index: int = 0) -> None:
+        self.refresh_auto_speed_controls()
         if not self.practice_running:
             self.refresh_practice_display()
             return
         self.stop_practice()
         self.start_practice()
 
-    def handle_bpm_change(self, _value: int = 0) -> None:
+    def handle_auto_speed_change(self, _value: int = 0) -> None:
+        self.refresh_auto_speed_controls()
         if self.practice_running and self.current_mode() == "auto":
-            self.auto_flow_timer.start(self._auto_interval_ms())
+            self._schedule_auto_advance()
 
     def handle_microphone_change(self, _index: int = 0) -> None:
         if not self.practice_running or self.current_mode() != "interactive":
@@ -387,6 +395,11 @@ class MainWindow(QMainWindow):
 
     def refresh_marker_status(self) -> None:
         self.marker_status_label.setText("가이드 점 0개")
+
+    def refresh_auto_speed_controls(self) -> None:
+        is_auto_mode = self.current_mode() == "auto"
+        self.practice_panel.set_auto_speed_controls_visible(is_auto_mode)
+        self.auto_speed_value_label.setText(f"{self.current_auto_speed_multiplier():.2f}x")
 
     def begin_line_selection(self) -> None:
         if self.video_worker is None or not self.video_worker.isRunning():
@@ -499,7 +512,7 @@ class MainWindow(QMainWindow):
         else:
             self._stop_audio_worker()
             self.practice_status_label.setText(STATUS_TEXT["auto"])
-            self.auto_flow_timer.start(self._auto_interval_ms())
+            self._schedule_auto_advance()
 
     def stop_practice(self) -> None:
         self.practice_running = False
@@ -530,6 +543,8 @@ class MainWindow(QMainWindow):
         self._cancel_pending_interactive_advance()
         if mode == "interactive":
             self._stop_audio_worker()
+        elif mode == "auto":
+            self.auto_flow_timer.stop()
 
         self.current_index = max(0, min(index, len(self.practice_steps) - 1))
         self.retrigger_gate.configure(previous_step, self.current_step())
@@ -539,6 +554,9 @@ class MainWindow(QMainWindow):
             self.practice_running = True
             self.practice_panel.set_running(True)
             self._start_audio_worker_for_current_step()
+        elif was_running and mode == "auto":
+            self.practice_status_label.setText(STATUS_TEXT["auto"])
+            self._schedule_auto_advance()
 
     def _complete_practice(self) -> None:
         self.practice_running = False
@@ -549,7 +567,10 @@ class MainWindow(QMainWindow):
         self.practice_status_label.setText(STATUS_TEXT["complete"])
 
     def _auto_interval_ms(self) -> int:
-        return max(1, int(round(60000 / max(1, self.bpm_spin.value()))))
+        return max(1, int(round(self.current_step().duration_ms / self.current_auto_speed_multiplier())))
+
+    def _schedule_auto_advance(self) -> None:
+        self.auto_flow_timer.start(self._auto_interval_ms())
 
     def _handle_auto_flow_tick(self) -> None:
         if not self.practice_running or self.current_mode() != "auto":
