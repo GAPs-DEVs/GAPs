@@ -3,8 +3,10 @@ import os
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QLabel, QTableWidget, QTableWidgetItem, QHeaderView, 
                              QMessageBox, QFileDialog, QSpinBox, QGroupBox, QScrollArea)
-from PySide6.QtCore import Qt, QRect, QSize, Signal
+from PySide6.QtCore import Qt, QRect, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
+
+from app.ui.tab_sheet_view import TabSheetView
 
 # 인터랙티브 지판 모니터 
 
@@ -123,66 +125,6 @@ class FretboardMonitor(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.is_dragging = False
-
-
-# 전체 타브 악보 시각화 시트
-class TabSheetView(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.tab_data = []
-        self.selected_step = -1
-        self.setMinimumSize(QSize(3000, 120))
-
-    def set_data(self, data):
-        self.tab_data = data
-        if self.tab_data:
-            max_step = max(item.get('step', 0) for item in self.tab_data)
-            dynamic_width = (max_step * 35) + 200
-            final_width = max(3000, dynamic_width)
-            self.setMinimumSize(QSize(final_width, 120))
-        self.update()
-
-    def set_current_step(self, step):
-        self.selected_step = step
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(0, 0, self.width(), self.height(), QColor("#f9f9f9")) 
-
-        for i in range(6):
-            y = 25 + (i * 12)
-            painter.setPen(QPen(QColor("#cccccc"), 1, Qt.SolidLine))
-            painter.drawLine(10, y, self.width() - 10, y)
-
-        if not self.tab_data:
-            return
-
-        steps_map = {}
-        for item in self.tab_data:
-            st = item.get('step', 1)
-            if st not in steps_map: steps_map[st] = []
-            steps_map[st].append(item)
-
-        step_spacing = 35
-        for st, notes in steps_map.items():
-            x_pos = 30 + (st * step_spacing)
-
-            if st == self.selected_step:
-                painter.setPen(QPen(QColor("#ff3b30"), 1.5, Qt.SolidLine))
-                painter.setBrush(QColor(255, 59, 48, 25))
-                painter.drawRect(x_pos - 12, 10, 24, 85)
-
-            for note in notes:
-                s_num = note.get('string', 1)
-                f_num = note.get('fret', 0)
-                y_pos = 25 + ((s_num - 1) * 12)
-                
-                painter.fillRect(x_pos - 6, y_pos - 5, 12, 10, QColor("#f9f9f9"))
-                painter.setPen(QColor("#000000"))
-                painter.setFont(QFont("Helvetica", 10, QFont.Bold))
-                painter.drawText(x_pos - 4, y_pos + 4, str(f_num))
 
 
 # 관리자 에디터 페이지 

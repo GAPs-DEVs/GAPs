@@ -5,6 +5,24 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PySide6.QtCore import Qt, QThread, Signal
 import guitarpro  # PyGuitarPro 라이브러리
 
+MEASURES_PER_SCORE_LINE = 4
+STEPS_PER_FALLBACK_SCORE_LINE = 16
+
+
+def _measure_has_line_break(measure) -> bool:
+    line_break = getattr(measure, "lineBreak", None)
+    line_break_name = getattr(line_break, "name", "")
+    return line_break_name in {"break_", "break"}
+
+
+def _select_guitar_track(song):
+    for track in song.tracks:
+        strings = getattr(track, "strings", [])
+        if len(strings) == 6:
+            return track
+    return song.tracks[0]
+
+
 class ParsingThread(QThread):
     parsing_finished = Signal(bool, str)
     
@@ -23,16 +41,25 @@ class ParsingThread(QThread):
             try:
                 # ── 기타프로 정밀 시퀀스 분석 엔진 가동 ──
                 song = guitarpro.parse(self.file_path)
-                guitar_track = song.tracks[0]
+                guitar_track = _select_guitar_track(song)
+                measures = list(guitar_track.measures)
+                has_explicit_score_lines = any(_measure_has_line_break(measure) for measure in measures)
                 
                 # [BPM 추출] 곡의 마스터 템포 정보 확보 (없으면 기본값 120)
                 bpm = song.tempo if song.tempo > 0 else 120
                 
                 parsed_data = []
                 step_counter = 1
+                score_line = 1
                 
-                for measure in guitar_track.measures:
-                    for beat in measure.voices[0].beats:
+                for measure_index, measure in enumerate(measures, start=1):
+                    measure_number = int(getattr(measure, "number", measure_index) or measure_index)
+                    if has_explicit_score_lines:
+                        current_score_line = score_line
+                    else:
+                        current_score_line = ((measure_index - 1) // MEASURES_PER_SCORE_LINE) + 1
+
+                    for beat_index, beat in enumerate(measure.voices[0].beats, start=1):
                         if not beat.notes: continue
                         
                         # [밀리초 박자 연산] 개별 음표가 유지되어야 할 절대 시간(ms) 계산
@@ -63,6 +90,9 @@ class ParsingThread(QThread):
                             
                             parsed_data.append({
                                 "step": step_counter,
+                                "score_line": current_score_line,
+                                "measure": measure_number,
+                                "beat": beat_index,
                                 "string": string_num,
                                 "fret": fret_num,
                                 "duration_ms": duration_ms, # ⏱️ 노래 박자 자동진행용 시간 메타데이터
@@ -71,6 +101,9 @@ class ParsingThread(QThread):
                             has_valid_note = True
                         if has_valid_note: 
                             step_counter += 1
+
+                    if has_explicit_score_lines and _measure_has_line_break(measure):
+                        score_line += 1
                             
                 with open(output_json_path, 'w', encoding='utf-8') as f:
                     json.dump(parsed_data, f, indent=2, ensure_ascii=False)
@@ -90,10 +123,13 @@ class ParsingThread(QThread):
                         image_tab_data = json.load(f)
                     
                     for item in image_tab_data:
+                        step = int(item.get("step", 1))
                         if "duration_ms" not in item:
                             item["duration_ms"] = 500  # 기본 대기 시간 기본값 지정 (4분음표 방어)
                         if "midi_pitch" not in item:
                             item["midi_pitch"] = 60    # 기본 가상 C 음고 지정
+                        if "score_line" not in item:
+                            item["score_line"] = ((step - 1) // STEPS_PER_FALLBACK_SCORE_LINE) + 1
                             
                     with open(output_json_path, 'w', encoding='utf-8') as f:
                         json.dump(image_tab_data, f, indent=2, ensure_ascii=False)
