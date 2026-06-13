@@ -295,22 +295,49 @@ class AdminPage(QWidget):
 
     
     # 지판 드래그 앤 드롭
+    # def on_fretboard_dragged(self, string_num, fret_num):
+    #     if not self.tab_data: return
+    #     current_row = self.table.currentRow()
+    #     if current_row < 0: return 
+        
+    #     # 1. 테이블 차단 해제 후 데이터 교체
+    #     self.table.blockSignals(True)
+    #     self.tab_data[current_row]['string'] = string_num
+    #     self.tab_data[current_row]['fret'] = fret_num
+        
+    #     # 2. 하단 테이블 셀 텍스트 즉시 동기화
+    #     self.table.item(current_row, 1).setText(str(string_num))
+    #     self.table.item(current_row, 2).setText(str(fret_num))
+    #     self.table.blockSignals(False)
+        
+    #     # 3. 변경 사항을 기반으로 상단 지판 모니터와 악보 뷰 리프레시
+    #     target_step = self.tab_data[current_row].get('step', -1)
+    #     harmonics = [item for item in self.tab_data if item.get('step') == target_step]
+    #     self.fretboard_monitor.update_notes(harmonics)
+    #     self.tab_sheet_view.set_current_step(target_step)
+    # 지판 드래그 앤 드롭 시 midi_pitch 자동 갱신 반영
     def on_fretboard_dragged(self, string_num, fret_num):
         if not self.tab_data: return
         current_row = self.table.currentRow()
         if current_row < 0: return 
         
-        # 1. 테이블 차단 해제 후 데이터 교체
+        # 1. 표준 조율 개방현 미디 번호 매핑 매트릭스 (1번줄~6번줄)
+        # 💡 파일 로드 시 자동 추출된 곡 고유의 조율 맵 사용 (없으면 방어선으로 표준 조율 40 사용)
+        open_string_map = getattr(self, 'open_string_midi', {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 40})
+        calculated_midi = open_string_map.get(string_num, 40) + fret_num        
+        
+        # 3. 테이블 차단 후 메모리 데이터셋 동시 갱신
         self.table.blockSignals(True)
         self.tab_data[current_row]['string'] = string_num
         self.tab_data[current_row]['fret'] = fret_num
+        self.tab_data[current_row]['midi_pitch'] = calculated_midi # 💡 midi_pitch 실시간 자동 수정
         
-        # 2. 하단 테이블 셀 텍스트 즉시 동기화
+        # 4. 하단 테이블 셀 텍스트 즉시 동기화
         self.table.item(current_row, 1).setText(str(string_num))
         self.table.item(current_row, 2).setText(str(fret_num))
         self.table.blockSignals(False)
         
-        # 3. 변경 사항을 기반으로 상단 지판 모니터와 악보 뷰 리프레시
+        # 5. 변경 사항을 기반으로 상단 지판 모니터와 악보 뷰 리프레시
         target_step = self.tab_data[current_row].get('step', -1)
         harmonics = [item for item in self.tab_data if item.get('step') == target_step]
         self.fretboard_monitor.update_notes(harmonics)
@@ -332,18 +359,41 @@ class AdminPage(QWidget):
         x_target = 30 + (target_step * 35)
         self.scroll_area.horizontalScrollBar().setValue(x_target - 150)
 
+    # def insert_row_data(self):
+    #     if not self.current_file_path: return
+    #     current_row = self.table.currentRow()
+    #     if current_row < 0: current_row = len(self.tab_data) - 1
+            
+    #     base_step = self.tab_data[current_row]['step'] if self.tab_data else 1
+    #     new_item = {"step": base_step, "string": self.spin_string.value(), "fret": self.spin_fret.value()}
+        
+    #     insert_idx = current_row + 1
+    #     self.tab_data.insert(insert_idx, new_item)
+    #     self.refresh_table()
+    #     self.table.selectRow(insert_idx)
+    
     def insert_row_data(self):
         if not self.current_file_path: return
         current_row = self.table.currentRow()
         if current_row < 0: current_row = len(self.tab_data) - 1
             
-        base_step = self.tab_data[current_row]['step'] if self.tab_data else 1
-        new_item = {"step": base_step, "string": self.spin_string.value(), "fret": self.spin_fret.value()}
-        
-        insert_idx = current_row + 1
-        self.tab_data.insert(insert_idx, new_item)
-        self.refresh_table()
-        self.table.selectRow(insert_idx)
+        if self.tab_data and current_row >= 0:
+            # 1. 현재 선택된 행의 모든 데이터(8개 필드)를 완벽히 복사
+            new_item = self.tab_data[current_row].copy()
+            
+            # 2. 사용자가 스핀박스에서 지정한 값으로만 덮어쓰기
+            new_item["string"] = self.spin_string.value()
+            new_item["fret"] = self.spin_fret.value()
+            
+            insert_idx = current_row + 1
+            self.tab_data.insert(insert_idx, new_item)
+            
+            # 3. 테이블 신호를 잠시 차단하고 안전하게 새로고침
+            self.table.blockSignals(True)
+            self.refresh_table()
+            self.table.blockSignals(False)
+            
+            self.table.selectRow(insert_idx)
 
     def load_json_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "파싱 결과 JSON 불러오기", "", "JSON Files (*.json)")
@@ -361,10 +411,28 @@ class AdminPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "오류", f"로드 실패: {e}")
 
+    # def refresh_table(self):
+    #     self.table.blockSignals(True)
+    #     self.table.setRowCount(len(self.tab_data))
+    #     for row, item in enumerate(self.tab_data):
+    #         item_step = QTableWidgetItem(str(item.get('step', '')))
+    #         item_string = QTableWidgetItem(str(item.get('string', '')))
+    #         item_fret = QTableWidgetItem(str(item.get('fret', '')))
+            
+    #         item_step.setTextAlignment(Qt.AlignCenter)
+    #         item_string.setTextAlignment(Qt.AlignCenter)
+    #         item_fret.setTextAlignment(Qt.AlignCenter)
+            
+    #         self.table.setItem(row, 0, item_step)
+    #         self.table.setItem(row, 1, item_string)
+    #         self.table.setItem(row, 2, item_fret)
+    #     self.table.blockSignals(False)
+    #     if self.tab_data: self.table.selectRow(0)
     def refresh_table(self):
         self.table.blockSignals(True)
         self.table.setRowCount(len(self.tab_data))
         for row, item in enumerate(self.tab_data):
+            # 💡 사용자가 편집하고 볼 수 있는 화면 열은 원래대로 3개만 유지합니다.
             item_step = QTableWidgetItem(str(item.get('step', '')))
             item_string = QTableWidgetItem(str(item.get('string', '')))
             item_fret = QTableWidgetItem(str(item.get('fret', '')))
@@ -379,21 +447,60 @@ class AdminPage(QWidget):
         self.table.blockSignals(False)
         if self.tab_data: self.table.selectRow(0)
 
+    # def on_cell_changed(self, row, column):
+    #     if row >= len(self.tab_data): return
+    #     item = self.table.item(row, column)
+    #     if not item: return
+    #     try:
+    #         val = int(item.text())
+    #         # 오직 화면에 보이는 0, 1, 2번 컬럼을 수동 편집할 때만 메모리를 교체하고 나머지 5개는 건드리지 않음
+    #         if column == 0: self.tab_data[row]['step'] = val
+    #         elif column == 1 and 1 <= val <= 6: self.tab_data[row]['string'] = val
+    #         elif column == 2 and 0 <= val <= 24: self.tab_data[row]['fret'] = val
+            
+    #         # 무한 루프 방지를 위해 신호 차단 후 정렬 및 리프레시
+    #         self.table.blockSignals(True)
+    #         self.tab_data.sort(key=lambda x: (x.get('step', 0), x.get('string', 0)))
+    #         self.tab_sheet_view.set_data(self.tab_data)
+    #         self.refresh_table()
+    #         self.table.blockSignals(False)
+    #     except ValueError:
+    #         self.table.blockSignals(True)
+    #         self.refresh_table()
+    #         self.table.blockSignals(False)
+    # 테이블 셀 수동 수정 시 midi_pitch 자동 연산 및 유실 차단 방어선
     def on_cell_changed(self, row, column):
         if row >= len(self.tab_data): return
         item = self.table.item(row, column)
         if not item: return
         try:
             val = int(item.text())
-            if column == 0: self.tab_data[row]['step'] = val
-            elif column == 1 and 1 <= val <= 6: self.tab_data[row]['string'] = val
-            elif column == 2 and 0 <= val <= 24: self.tab_data[row]['fret'] = val
+            if column == 0: 
+                self.tab_data[row]['step'] = val
+            elif column == 1 and 1 <= val <= 6: 
+                self.tab_data[row]['string'] = val
+            elif column == 2 and 0 <= val <= 24: 
+                self.tab_data[row]['fret'] = val
             
+            # 💡 [자동 연산] 줄(1번열) 또는 프렛(2번열) 데이터가 수정되었다면 midi_pitch를 즉시 동적 갱신
+            # 💡 [자동 연산] 변경된 곡 고유의 개방현 스펙을 반영하여 실시간 동적 연산
+            if column in [1, 2]:
+                open_string_map = getattr(self, 'open_string_midi', {1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 40})
+                s_num = self.tab_data[row].get('string', 6)
+                f_num = self.tab_data[row].get('fret', 0)
+                self.tab_data[row]['midi_pitch'] = open_string_map.get(s_num, 40) + f_num            
+            
+            # 무한 루프 방지를 위해 신호 차단 후 정렬 및 리프레시
+            self.table.blockSignals(True)
             self.tab_data.sort(key=lambda x: (x.get('step', 0), x.get('string', 0)))
             self.tab_sheet_view.set_data(self.tab_data)
             self.refresh_table()
+            self.table.blockSignals(False)
         except ValueError:
+            self.table.blockSignals(True)
             self.refresh_table()
+            self.table.blockSignals(False)
+
 
     def delete_selected_row(self):
         row = self.table.currentRow()
@@ -403,13 +510,13 @@ class AdminPage(QWidget):
         self.refresh_table()
 
     def save_json_file(self):
-        if not self.current_file_path: return
-        try:
-            with open(self.current_file_path, 'w', encoding='utf-8') as f:
-                json.dump(self.tab_data, f, indent=2, ensure_ascii=False)
-            QMessageBox.information(self, "저장 완료", "모든 타브 악보 교정 데이터가 성공적으로 백엔드에 아카이빙되었습니다.")
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"저장 실패: {e}")
-
+      if not self.current_file_path: return
+      try:
+          with open(self.current_file_path, 'w', encoding='utf-8') as f:
+              json.dump(self.tab_data, f, indent=2, ensure_ascii=False)
+          QMessageBox.information(self, "저장 완료", "수정 사항이 성공적으로 반영되었습니다.")
+      except Exception as e:
+          QMessageBox.critical(self, "오류", f"저장 실패: {e}")
+    
     def go_back(self):
         self.main_window.stacked_widget.setCurrentIndex(0)
