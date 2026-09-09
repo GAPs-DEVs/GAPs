@@ -1,0 +1,129 @@
+// Open this file in a DBML-compatible ERD viewer such as dbdiagram.io.
+
+Table users {
+  id uuid [pk]
+  display_name varchar
+  role varchar
+  status varchar
+  created_at timestamptz
+}
+
+Table oauth_identities {
+  id uuid [pk]
+  user_id uuid [not null]
+  provider varchar [not null]
+  provider_subject varchar [not null]
+  email varchar
+
+  Indexes {
+    (provider, provider_subject) [unique]
+  }
+}
+
+Table scores {
+  id uuid [pk]
+  owner_user_id uuid [not null]
+  title varchar
+  visibility varchar
+  source_type varchar
+  parser_status varchar
+}
+
+Table score_assets {
+  id uuid [pk]
+  score_id uuid [not null]
+  asset_type varchar
+  storage_provider varchar
+  storage_key text
+}
+
+Table score_versions {
+  id uuid [pk]
+  score_id uuid [not null]
+  source_asset_id uuid
+  created_by_user_id uuid
+  version_number int
+}
+
+Table score_steps {
+  id uuid [pk]
+  score_version_id uuid [not null]
+  sequence_no int
+  score_line int
+  measure_no int
+  beat_no int
+  duration_ms int
+}
+
+Table score_notes {
+  id uuid [pk]
+  score_step_id uuid [not null]
+  string_number smallint
+  fret_number smallint
+  midi_pitch smallint
+}
+
+Table score_members {
+  score_id uuid [not null]
+  user_id uuid [not null]
+  permission varchar
+}
+
+Table user_score_library {
+  user_id uuid [not null]
+  score_id uuid [not null]
+  saved_score_version_id uuid
+  is_favorite boolean
+}
+
+Table user_instruments {
+  id uuid [pk]
+  user_id uuid [not null]
+  label varchar
+  tuning_midi jsonb
+}
+
+Table practice_sessions {
+  id uuid [pk]
+  user_id uuid [not null]
+  score_version_id uuid [not null]
+  mode varchar
+  status varchar
+}
+
+Table practice_step_results {
+  id uuid [pk]
+  practice_session_id uuid [not null]
+  score_version_id uuid [not null]
+  score_step_id uuid [not null]
+  outcome varchar
+  attempt_no int
+}
+
+Table user_score_progress {
+  user_id uuid [not null]
+  score_version_id uuid [not null]
+  last_completed_step_no int
+  best_accuracy_percent decimal
+}
+
+Ref: oauth_identities.user_id > users.id
+Ref: scores.owner_user_id > users.id
+Ref: score_assets.score_id > scores.id
+Ref: score_versions.score_id > scores.id
+Ref: score_versions.source_asset_id > score_assets.id
+Ref: score_versions.created_by_user_id > users.id
+Ref: score_steps.score_version_id > score_versions.id
+Ref: score_notes.score_step_id > score_steps.id
+Ref: score_members.score_id > scores.id
+Ref: score_members.user_id > users.id
+Ref: user_score_library.user_id > users.id
+Ref: user_score_library.score_id > scores.id
+Ref: user_score_library.saved_score_version_id > score_versions.id
+Ref: user_instruments.user_id > users.id
+Ref: practice_sessions.user_id > users.id
+Ref: practice_sessions.score_version_id > score_versions.id
+Ref: practice_step_results.practice_session_id > practice_sessions.id
+Ref: practice_step_results.score_step_id > score_steps.id
+Ref: user_score_progress.user_id > users.id
+Ref: user_score_progress.score_version_id > score_versions.id
