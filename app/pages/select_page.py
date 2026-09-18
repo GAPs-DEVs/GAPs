@@ -293,10 +293,22 @@ class SelectPage(QWidget):
         if self.song_list_widget.count() > 0: self.song_list_widget.setCurrentRow(0)
 
     def launch_practice(self):
+        """곡 선택 확인 후 연습 화면(Index 2) 가동"""
         current_item = self.song_list_widget.currentItem()
-        if not current_item: return
+        if not current_item:
+            QMessageBox.warning(self, "악보 미선택", "연습을 시작할 악보를 목록에서 먼저 클릭해 주세요.")
+            return
+
         target_path = os.path.join(self.db_mock_dir, f"{current_item.text().lower()}_parsed.json")
-        self.main_window.switch_to_practice(target_path)
+        if not os.path.exists(target_path):
+            QMessageBox.critical(self, "파일 오류", f"선택한 악보 파일이 존재하지 않습니다:\n{target_path}")
+            return
+
+        print(f"[연습 시작 요청] 전달 악보: {target_path}")
+        if hasattr(self.main_window, 'switch_to_practice'):
+            self.main_window.switch_to_practice(target_path)
+        else:
+            self.main_window.stacked_widget.setCurrentIndex(2)
 
     def start_async_parsing(self, mode):
         if mode == "GP": f, _ = QFileDialog.getOpenFileName(self, "GP 로드", "", "GuitarPro (*.gp*)")
@@ -320,7 +332,16 @@ class SelectPage(QWidget):
         else: QMessageBox.critical(self, "오류", message)
 
     def go_to_admin(self):
+        """곡 선택 여부와 무관하게 에디터 페이지(Index 3)로 확실히 이동"""
         item = self.song_list_widget.currentItem()
-        if not item: return
-        path = os.path.join(self.db_mock_dir, f"{item.text().lower()}_parsed.json")
-        self.main_window.switch_to_admin(path)
+        path = None
+        if item:
+            candidate_path = os.path.join(self.db_mock_dir, f"{item.text().lower()}_parsed.json")
+            if os.path.exists(candidate_path):
+                path = candidate_path
+        
+        # switch_to_admin 호출 또는 스택 3번(에디터) 강제 전환
+        if hasattr(self.main_window, 'switch_to_admin'):
+            self.main_window.switch_to_admin(path)
+        else:
+            self.main_window.stacked_widget.setCurrentIndex(3)
