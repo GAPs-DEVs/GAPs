@@ -31,8 +31,9 @@ from vision.fretboard_mapping import (
     infer_selected_reference_fret_index,
 )
 
-from pages.select_page import SelectPage
-from pages.admin_page import AdminPage
+from app.pages.select_page import SelectPage
+from app.pages.admin_page import AdminPage
+from app.pages.login_page import LoginPage
 
 
 STATUS_TEXT = {
@@ -152,20 +153,32 @@ class MainWindow(QMainWindow):
         video_column_layout.setSpacing(8)
         video_column_layout.addWidget(self.video_label, stretch=1)
         video_column_layout.addWidget(self.practice_tab_strip)
-
+        
         root_layout.addWidget(video_column, stretch=1)
         root_layout.addWidget(self._build_side_panel())
 
+        # ── [4단 라우팅 스택 조립] ──
         self.stacked_widget = QStackedWidget(self)
         self.setCentralWidget(self.stacked_widget)
 
-        self.select_page = SelectPage(main_window=self)  # Index 0 
-        self.admin_page = AdminPage(main_window=self)    # Index 2 
+        # 2. 인스턴스 생성 (이 4줄이 먼저 와야 합니다)
+        self.login_page = LoginPage(main_window=self)     # Index 0
+        self.select_page = SelectPage(main_window=self)   # Index 1
+        self.practice_root = root                         # Index 2
+        self.admin_page = AdminPage(main_window=self)     # Index 3
 
         # 복조된 팀원분 오리지널 패널(root)을 스택의 Index 1로 통째로 안착
+        self.stacked_widget.addWidget(self.login_page)
         self.stacked_widget.addWidget(self.select_page)
-        self.stacked_widget.addWidget(root)
+        self.stacked_widget.addWidget(self.practice_root)
         self.stacked_widget.addWidget(self.admin_page)
+        
+        # ── [진단용 디버그 출력] ──
+        print("\n================== [현재 스택 위젯 배치 순서] ==================")
+        for i in range(self.stacked_widget.count()):
+            widget = self.stacked_widget.widget(i)
+            print(f"Index [{i}]: {widget.__class__.__name__} (메모리 주소: {id(widget)})")
+        print("=================================================================\n")
 
         self.populate_camera_list(selected=camera_index)
         self.populate_microphone_list()
@@ -175,44 +188,62 @@ class MainWindow(QMainWindow):
         self.refresh_practice_display()
         self.refresh_marker_status()
 
-    # 악보 보드 연동 커넥터 구현
+    # 클래스 내부에 화면 전환 라우터 메서드 추가/보강
+    # ── [화면 라우팅 컨트롤러] ──
+
+    def switch_to_select(self):
+        """악보 선택 허브(Index 1)로 복귀"""
+        if hasattr(self, 'stop_practice'):
+            try:
+                self.stop_practice()
+            except Exception:
+                pass
+        self.stacked_widget.setCurrentIndex(1)
+
     def switch_to_practice(self, json_path: str):
+        print(f"🔥🔥 [DEBUG] switch_to_practice 실제로 호출됨! 이동할 목표 Index: 2, 현재 파일: {__file__}")
+        """선택한 악보 JSON을 로드하고 연습 화면(Index 2)으로 전환"""
+        print(f"[switch_to_practice 진입] 경로: {json_path}")
         self.score_path = Path(json_path)
         steps = build_practice_steps_from_json(self.score_path)
         if not steps:
             QMessageBox.warning(self, "데이터 오류", "선택한 악보의 정형 시퀀스가 비어있습니다.")
             return
-            
+
         self.practice_steps = steps
         self.current_index = 0
         self.refresh_practice_tab_data()
         self.retrigger_gate.configure(None, self.current_step())
         self.refresh_practice_display()
-        self.stacked_widget.setCurrentIndex(1) # 오리지널 연습 화면(Index 1) 가동
 
-    def switch_to_admin(self, json_path: str):
-        self.score_path = Path(json_path)
-        
-        # 1. 에디터 페이지의 현재 파일 경로 및 데이터 상태를 강제로 동기화
-        self.admin_page.current_file_path = json_path
-        self.admin_page.file_status.setText(f"📂 로드된 파일: {os.path.basename(json_path)}")
-        
-        try:
-            # 2. 에디터 내부의 메모리 데이터셋 채우기 및 정렬
-            with open(json_path, 'r', encoding='utf-8') as f:
-                self.admin_page.tab_data = json.load(f)
-            self.admin_page.tab_data.sort(key=lambda x: (x.get('step', 0), x.get('string', 0)))
-            
-            # 3. 에디터 상단의 지판 시트 뷰와 하단 테이블 리프레시 가동
-            self.admin_page.tab_sheet_view.set_data(self.admin_page.tab_data)
-            self.admin_page.scroll_area.setWidget(self.admin_page.tab_sheet_view)
-            self.admin_page.refresh_table()
-            
-            # 4. 모든 바인딩이 끝나면 화면 스택을 '정밀 교정 에디터(Index 2)'로 즉시 워프!
-            self.stacked_widget.setCurrentIndex(2)
-            
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"에디터 다이렉트 로드 실패: {e}")
+        # 💡 팀원 연습 화면은 Index 2 입니다!
+        self.stacked_widget.setCurrentIndex(2)
+
+    def switch_to_admin(self, json_path: str = None):
+        print(f"🔥🔥 [DEBUG] switch_to_admin 실제로 호출됨! 이동할 목표 Index: 3, 현재 파일: {__file__}")
+        """악보 정밀 에디터(Index 3)로 전환"""
+        print(f"[switch_to_admin 진입] 경로: {json_path}")
+        if json_path and os.path.exists(json_path):
+            self.score_path = Path(json_path)
+            self.admin_page.current_file_path = json_path
+            if hasattr(self.admin_page, 'file_status'):
+                self.admin_page.file_status.setText(f"📂 로드된 파일: {os.path.basename(json_path)}")
+
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    self.admin_page.tab_data = json.load(f)
+                if isinstance(self.admin_page.tab_data, list):
+                    self.admin_page.tab_data.sort(key=lambda x: (x.get('step', 0), x.get('string', 0)))
+
+                if hasattr(self.admin_page, 'tab_sheet_view') and hasattr(self.admin_page.tab_sheet_view, 'set_data'):
+                    self.admin_page.tab_sheet_view.set_data(self.admin_page.tab_data)
+                if hasattr(self.admin_page, 'refresh_table'):
+                    self.admin_page.refresh_table()
+            except Exception as e:
+                QMessageBox.critical(self, "오류", f"에디터 다이렉트 로드 실패: {e}")
+
+        # 💡 악보 정밀 에디터는 Index 3 입니다!
+        self.stacked_widget.setCurrentIndex(3)
 
     def _build_side_panel(self) -> QWidget:
         panel = QWidget()
@@ -240,7 +271,7 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background-color: #555555; }
         """)
         # 복귀 시 오디오 캡처와 카메라 스레드를 완벽히 정지시키고 홈으로 안전 이동
-        btn_home.clicked.connect(lambda: (self.stop_practice(), self.stop_video(), self.stacked_widget.setCurrentIndex(0)))
+        btn_home.clicked.connect(lambda: (self.stop_practice(), self.stop_video(), self.switch_to_select()))
         layout.addWidget(btn_home)
 
         layout.addStretch(1)
