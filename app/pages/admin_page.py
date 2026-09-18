@@ -510,13 +510,17 @@ class AdminPage(QWidget):
         self.refresh_table()
 
     def save_json_file(self):
-      if not self.current_file_path: return
-      try:
-          with open(self.current_file_path, 'w', encoding='utf-8') as f:
-              json.dump(self.tab_data, f, indent=2, ensure_ascii=False)
-          QMessageBox.information(self, "저장 완료", "수정 사항이 성공적으로 반영되었습니다.")
-      except Exception as e:
-          QMessageBox.critical(self, "오류", f"저장 실패: {e}")
-    
-    def go_back(self):
-        self.main_window.stacked_widget.setCurrentIndex(0)
+        if not self.current_file_path: return
+        try:
+            with open(self.current_file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.tab_data, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(self, "저장 완료", "수정 사항이 성공적으로 반영되었습니다.")
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"저장 실패: {e}")
+
+    def go_back(self):  # 또는 함수명이 return_to_main, on_back 등
+        # 0(로그인) 대신 switch_to_select(악보 선택) 호출
+        if hasattr(self.main_window, 'switch_to_select'):
+            self.main_window.switch_to_select()
+        else:
+            self.main_window.stacked_widget.setCurrentIndex(1)
