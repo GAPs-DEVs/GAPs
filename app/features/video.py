@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
 
@@ -15,8 +15,8 @@ from tools.fretboard_detection_viewer import (
     TRACKING_CONF_FLOOR,
     TRACKING_CONF_SCALE,
     bgr_to_qimage,
+    draw_calibrated_guides,
     draw_detected_lines,
-    draw_edge_guides,
     draw_fingertips,
     draw_note_markers,
     filter_note_markers_by_edge_frets,
@@ -36,7 +36,8 @@ from vision.fretboard_mapping import (
     build_fretboard_grid,
     count_detected_classes,
 )
-from vision.hand_tracking import Fingertip, HandTrackingResult, MediaPipeHandTracker
+from vision.fretboard_motion import HybridSelectedLineTracker, HybridTrackingFrame, filter_visible_markers
+from vision.hand_tracking import Fingertip, HandTrackingResult, MediaPipeHandTracker, HandOcclusionMasker
 
 
 HAND_TRACKING_ENABLED = False
@@ -73,6 +74,7 @@ class PracticeFrameStats:
     edge_fret_count: int = 0
     stable_grid: StableFretboardGrid | None = None
     edge_refinement: EdgeRefinementResult | None = None
+    hand_mask_available: bool = False
 
 
 class PracticeVideoWorker(QThread):
@@ -105,6 +107,10 @@ class PracticeVideoWorker(QThread):
         self.tracker = FretboardTracker(max_history=5)
         self.note_marker_tracker = NoteMarkerTracker()
         self.selected_line_tracker = SelectedLineTracker(max_history=5)
+        self.hybrid_tracker = HybridSelectedLineTracker(self.selected_line_tracker)
+        self.occlusion_masker = HandOcclusionMasker()
+        self.latest_exclusion_mask = None
+        self.manual_tracking_requested = False
         self.string_line_tracker = StringLineTracker()
         self.hand_tracker = MediaPipeHandTracker() if HAND_TRACKING_ENABLED else None
         self.latest_frame_bgr = None
@@ -112,6 +118,7 @@ class PracticeVideoWorker(QThread):
         self.selection_request = False
         self.selection_active = False
         self.pending_manual_selection: tuple[DetectedLine, DetectedLine, int] | None = None
+        self.pending_reference_fret_index: int | None = None
         self._running = True
 
     def stop(self) -> None:
@@ -143,9 +150,7 @@ class PracticeVideoWorker(QThread):
         if self.pending_manual_selection is not None:
             nut_line, reference_fret_line, _ = self.pending_manual_selection
             self.pending_manual_selection = (nut_line, reference_fret_line, reference_fret_index)
-        self.selected_line_tracker.set_reference_fret_index(reference_fret_index)
-        self.string_line_tracker.clear()
-        self.note_marker_tracker.clear()
+        self.pending_reference_fret_index = reference_fret_index
 
     def begin_line_selection(self) -> bool:
         if self.latest_frame_bgr is None:
@@ -168,9 +173,12 @@ class PracticeVideoWorker(QThread):
         reference_fret_index: int,
     ) -> None:
         self.pending_manual_selection = (nut_line, reference_fret_line, reference_fret_index)
+        self.manual_tracking_requested = True
 
     def clear_manual_tracking(self) -> None:
+        self.manual_tracking_requested = False
         self.selected_line_tracker.clear()
+        self.hybrid_tracker.clear()
         self.string_line_tracker.clear()
         self.note_marker_tracker.clear()
         self.cancel_line_selection()
@@ -196,6 +204,15 @@ class PracticeVideoWorker(QThread):
         previous_frame_time = perf_counter()
 
         while self._running:
+            if self.pending_reference_fret_index is not None:
+                reference_index = self.pending_reference_fret_index
+                self.pending_reference_fret_index = None
+                if self.selected_line_tracker.is_active:
+                    self.selected_line_tracker.set_reference_fret_index(reference_index)
+                    if self.latest_frame_bgr is not None:
+                        self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
+                    self.string_line_tracker.clear()
+                    self.note_marker_tracker.clear()
             if self.pending_manual_selection is not None:
                 nut_line, reference_fret_line, reference_fret_index = self.pending_manual_selection
                 self.selected_line_tracker.initialize_from_lines(
@@ -203,6 +220,8 @@ class PracticeVideoWorker(QThread):
                     reference_fret_line,
                     reference_fret_index,
                 )
+                if self.latest_frame_bgr is not None:
+                    self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
                 self.pending_manual_selection = None
                 self.selection_active = False
                 self.frozen_selection_lines = ()
@@ -222,24 +241,27 @@ class PracticeVideoWorker(QThread):
 
             self.latest_frame_bgr = frame_bgr.copy()
             inference_start = perf_counter()
+            self.latest_exclusion_mask = self.occlusion_masker.process(frame_bgr)
 
             if self.selection_request:
                 annotated, analysis = self._analyze_selection_frame(model, frame_bgr)
                 self.selection_request = False
                 self.selection_active = True
                 self.frozen_selection_lines = analysis.detected_lines
-            elif self.selected_line_tracker.is_active:
-                roi_detected_lines: tuple[DetectedLine, ...] = ()
-                search_roi = self.selected_line_tracker.search_roi(frame_bgr.shape)
-                if search_roi is not None:
-                    roi_detected_lines = predict_detected_lines(
+            elif self.selected_line_tracker.is_active or self.manual_tracking_requested:
+                def detect(roi):
+                    return predict_detected_lines(
                         model=model,
                         frame_bgr=frame_bgr,
-                        conf_threshold=max(TRACKING_CONF_FLOOR, self.conf_threshold * TRACKING_CONF_SCALE),
+                        conf_threshold=(
+                            max(TRACKING_CONF_FLOOR, self.conf_threshold * TRACKING_CONF_SCALE)
+                            if roi is not None else self.conf_threshold
+                        ),
                         image_size=self.image_size,
-                        roi=search_roi,
+                        roi=roi,
                     )
-                annotated, analysis = self._analyze_selected_lines_frame(frame_bgr, roi_detected_lines)
+                tracking_frame = self.hybrid_tracker.update(frame_bgr, detect, self.latest_exclusion_mask)
+                annotated, analysis = self._analyze_selected_lines_frame(frame_bgr, tracking_frame)
             else:
                 annotated, analysis = self._analyze_yolo_assist_frame(model, frame_bgr)
 
@@ -273,10 +295,12 @@ class PracticeVideoWorker(QThread):
                 ),
                 stable_grid=analysis.stable_grid,
                 edge_refinement=analysis.edge_refinement,
+                hand_mask_available=self.occlusion_masker.available,
             )
             self.frame_ready.emit(bgr_to_qimage(annotated), stats)
 
         capture.release()
+        self.occlusion_masker.close()
         if self.hand_tracker is not None:
             self.hand_tracker.close()
 
@@ -288,6 +312,7 @@ class PracticeVideoWorker(QThread):
             image_size=self.image_size,
         )
         self.selected_line_tracker.clear()
+        self.hybrid_tracker.clear()
         class_counts = count_detected_classes(detected_lines)
         stable_grid = self.tracker.update(build_fretboard_grid(detected_lines, prior_grid=self.tracker.last_grid))
         edge_refinement = refine_grid_with_edge_lines_diagnostics(
@@ -299,11 +324,11 @@ class PracticeVideoWorker(QThread):
             yolo_detected_lines=detected_lines,
         )
         stable_grid = edge_refinement.grid
-        note_markers = self._build_current_note_markers(stable_grid, edge_refinement)
+        # This frozen frame is for choosing physical boundaries, before an
+        # absolute fret number and visual reference exist. Do not show AR notes.
+        note_markers = ()
         hand_tracking = self._process_hand_tracking(frame_bgr, note_markers)
         annotated = draw_detected_lines(frame_bgr, detected_lines)
-        if self.show_edge_guides:
-            annotated = draw_edge_guides(annotated, stable_grid, edge_refinement=edge_refinement)
         annotated = draw_note_markers(annotated, note_markers, matched_marker_indices=hand_tracking.matched_marker_indices)
         annotated = draw_fingertips(annotated, hand_tracking.fingertips)
         return annotated, PracticeFrameAnalysis(
@@ -319,54 +344,37 @@ class PracticeVideoWorker(QThread):
         )
 
     def _analyze_yolo_assist_frame(self, model, frame_bgr) -> tuple[object, PracticeFrameAnalysis]:
-        detected_lines = predict_detected_lines(
-            model=model,
-            frame_bgr=frame_bgr,
-            conf_threshold=self.conf_threshold,
-            image_size=self.image_size,
-        )
-        class_counts = count_detected_classes(detected_lines)
-        stable_grid = self.tracker.update(build_fretboard_grid(detected_lines, prior_grid=self.tracker.last_grid))
-        edge_refinement = refine_grid_with_edge_lines_diagnostics(
-            frame_bgr,
-            stable_grid,
-            string_tracker=self.string_line_tracker,
-            suppressed_fret_indices=frozenset(),
-            apply_fret_refinement=False,
-            yolo_detected_lines=detected_lines,
-        )
-        stable_grid = edge_refinement.grid
-        note_markers = self._build_current_note_markers(stable_grid, edge_refinement)
-        hand_tracking = self._process_hand_tracking(frame_bgr, note_markers)
-        annotated = frame_bgr.copy()
-        if self.show_edge_guides:
-            annotated = draw_edge_guides(annotated, stable_grid, edge_refinement=edge_refinement)
-        annotated = draw_note_markers(annotated, note_markers, matched_marker_indices=hand_tracking.matched_marker_indices)
-        annotated = draw_fingertips(annotated, hand_tracking.fingertips)
-        return annotated, PracticeFrameAnalysis(
-            detected_lines=detected_lines,
-            stable_grid=stable_grid,
-            note_markers=note_markers,
+        # Fret identity and the camera reference are established explicitly once.
+        # Rendering the old uncalibrated edge grid here would bypass the verified
+        # tracking path and recreate the same wrong-fret/hand-warp failures.
+        self.note_marker_tracker.clear()
+        hand_tracking = self._process_hand_tracking(frame_bgr, ())
+        return frame_bgr.copy(), PracticeFrameAnalysis(
+            detected_lines=(),
+            stable_grid=None,
+            note_markers=(),
             fingertip_points=hand_tracking.fingertips,
-            matched_marker_indices=hand_tracking.matched_marker_indices,
-            class_counts=class_counts,
+            matched_marker_indices=(),
+            class_counts={},
             hand_tracking_available=hand_tracking.backend_available,
-            tracking_mode="yolo_assist",
-            edge_refinement=edge_refinement,
+            tracking_mode="calibration_required",
         )
 
     def _analyze_selected_lines_frame(
         self,
         frame_bgr,
-        primary_detected_lines: tuple[DetectedLine, ...],
+        tracking_frame: HybridTrackingFrame,
     ) -> tuple[object, PracticeFrameAnalysis]:
         reference_fret_index = self.selected_line_tracker.reference_fret_index
-        tracking_result = self.selected_line_tracker.update(
-            primary_detected_lines=primary_detected_lines,
-            fallback_detected_lines=None,
-        )
+        tracking_result = tracking_frame.result
+        primary_detected_lines = tracking_frame.detected_lines
+        if tracking_result.tracking_mode in {"selected_lines_reacquired", "selected_lines_hold", "selected_lines_lost"}:
+            self.note_marker_tracker.clear()
+            self.string_line_tracker.clear()
+        elif tracking_frame.homography is not None:
+            self.note_marker_tracker.apply_motion(tracking_frame.homography)
         class_counts = count_detected_classes(primary_detected_lines)
-        if tracking_result.stable_grid is None:
+        if tracking_result.stable_grid is None or tracking_result.tracking_mode == "selected_lines_hold":
             self.note_marker_tracker.update(())
             hand_tracking = self._process_hand_tracking(frame_bgr, ())
             annotated = frame_bgr.copy()
@@ -389,15 +397,23 @@ class PracticeVideoWorker(QThread):
             string_tracker=self.string_line_tracker,
             suppressed_fret_indices=frozenset(),
             apply_fret_refinement=False,
-            yolo_detected_lines=primary_detected_lines,
+            yolo_detected_lines=tracking_frame.support_lines,
         )
-        stable_grid = edge_refinement.grid
-        note_markers = self._build_current_note_markers(stable_grid, edge_refinement)
+        # The registered board owns AR coordinates. Image edges are diagnostics;
+        # a finger edge or a shortened detector segment must not move the marker.
+        stable_grid = tracking_result.stable_grid
+        edge_refinement = replace(edge_refinement, grid=stable_grid)
+        note_markers = (
+            self._build_current_note_markers(stable_grid, edge_refinement, calibrated=True)
+            if tracking_result.tracking_mode != "selected_lines_hold" else ()
+        )
+        note_markers = filter_visible_markers(note_markers, stable_grid, frame_bgr.shape,
+                                               tracking_frame.exclusion_mask, hide_occluded=False)
         hand_tracking = self._process_hand_tracking(frame_bgr, note_markers)
 
         annotated = frame_bgr.copy()
         if self.show_edge_guides:
-            annotated = draw_edge_guides(annotated, stable_grid, edge_refinement=edge_refinement)
+            annotated = draw_calibrated_guides(annotated, stable_grid)
         annotated = draw_note_markers(annotated, note_markers, matched_marker_indices=hand_tracking.matched_marker_indices)
         annotated = draw_fingertips(annotated, hand_tracking.fingertips)
         return annotated, PracticeFrameAnalysis(
@@ -417,6 +433,8 @@ class PracticeVideoWorker(QThread):
         self,
         stable_grid: StableFretboardGrid | None,
         edge_refinement: EdgeRefinementResult | None,
+        *,
+        calibrated: bool = False,
     ) -> tuple[NoteMarker, ...]:
         marker_grid, marker_edge_refinement = marker_grid_context(
             stable_grid,
@@ -431,8 +449,8 @@ class PracticeVideoWorker(QThread):
         note_markers = filter_note_markers_by_edge_frets(
             note_markers,
             marker_edge_refinement,
-            self.edge_supported_notes_only,
-            require_detected_fret_interval=True,
+            self.edge_supported_notes_only and not calibrated,
+            require_detected_fret_interval=not calibrated,
         )
         return self.note_marker_tracker.update(note_markers)
 

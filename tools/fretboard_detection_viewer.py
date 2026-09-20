@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
 
@@ -43,13 +43,13 @@ from vision.fretboard_mapping import (
     NoteMarker,
     NoteMarkerTracker,
     SelectedLineTracker,
+    STRING_COUNT,
     StableFretboardGrid,
     build_center_test_note_markers,
     build_fretboard_grid,
     build_note_markers,
     compute_string_crossings,
     count_detected_classes,
-    infer_selected_reference_fret_index,
     interpolate_points,
     line_midpoint,
     neck_direction_from_pair,
@@ -57,7 +57,8 @@ from vision.fretboard_mapping import (
     point_tuple,
     suppress_fret_indices_from_grid,
 )
-from vision.hand_tracking import Fingertip, MediaPipeHandTracker
+from vision.fretboard_motion import HybridSelectedLineTracker, HybridTrackingFrame, filter_visible_markers
+from vision.hand_tracking import Fingertip, MediaPipeHandTracker, HandOcclusionMasker
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -478,6 +479,33 @@ def draw_edge_guides(
     return annotated
 
 
+def draw_calibrated_guides(
+    frame_bgr: np.ndarray,
+    stable_grid: StableFretboardGrid | None,
+) -> np.ndarray:
+    """Draw only the accepted board model, including currently hidden frets.
+
+    Neutral guide colors distinguish these projected positions from raw edge
+    detections. Diagnostic edge fits must never change the displayed board.
+    """
+    if stable_grid is None or not stable_grid.string_crossings:
+        return frame_bgr
+    annotated = frame_bgr.copy()
+    for string_index in range(min(STRING_COUNT, len(stable_grid.string_crossings[0]))):
+        points = np.asarray([row[string_index] for row in stable_grid.string_crossings
+                             if string_index < len(row)], dtype=np.float64)
+        if len(points) >= 2 and np.isfinite(points).all():
+            cv2.polylines(annotated, [np.rint(points).astype(np.int32)], False,
+                          EDGE_GUIDE_INFERRED_STRING_COLOR, 1, cv2.LINE_AA)
+    for index, line in enumerate((stable_grid.nut_line, *stable_grid.ordered_fret_lines)):
+        points = np.asarray((line.p0, line.p1), dtype=np.float64)
+        if np.isfinite(points).all():
+            p0, p1 = np.rint(points).astype(np.int32)
+            cv2.line(annotated, tuple(p0), tuple(p1), EDGE_GUIDE_INFERRED_FRET_COLOR,
+                     2 if index == 0 else 1, cv2.LINE_AA)
+    return annotated
+
+
 def confirmed_fret_line(
     edge_refinement: EdgeRefinementResult,
     fret_index: int,
@@ -745,21 +773,35 @@ def analyze_selected_lines_frame(
     edge_supported_notes_only: bool = False,
     string_tracker: StringLineTracker | None = None,
     suppressed_fret_indices: Collection[int] | None = None,
+    tracking_frame: HybridTrackingFrame | None = None,
 ) -> tuple[np.ndarray, FrameAnalysis]:
     reference_fret_index = selected_line_tracker.reference_fret_index
-    tracking_result = selected_line_tracker.update(
+    tracking_result = tracking_frame.result if tracking_frame is not None else selected_line_tracker.update(
         primary_detected_lines=primary_detected_lines,
         fallback_detected_lines=fallback_detected_lines,
     )
     class_count_source = fallback_detected_lines if fallback_detected_lines else primary_detected_lines
     yolo_support_lines = tuple(primary_detected_lines) + tuple(fallback_detected_lines or ())
-    if tracking_result.stable_grid is None:
+    if tracking_frame is not None:
+        yolo_support_lines = tracking_frame.support_lines
+        if tracking_result.tracking_mode in {"selected_lines_reacquired", "selected_lines_hold", "selected_lines_lost"}:
+            note_marker_tracker.clear()
+            if string_tracker is not None:
+                string_tracker.clear()
+        elif tracking_frame.homography is not None:
+            note_marker_tracker.apply_motion(tracking_frame.homography)
+    calibrated_pose_hidden = tracking_frame is not None and tracking_result.tracking_mode in {
+        "selected_lines_hold", "selected_lines_lost",
+    }
+    if tracking_result.stable_grid is None or calibrated_pose_hidden:
         note_marker_tracker.update(())
         hand_tracking = hand_tracker.process(frame_bgr, ())
-        annotated = draw_detected_lines(frame_bgr, class_count_source, visible_kinds={"nut"})
+        annotated = frame_bgr.copy() if tracking_frame is not None else draw_detected_lines(
+            frame_bgr, class_count_source, visible_kinds={"nut"},
+        )
         annotated = draw_fingertips(annotated, hand_tracking.fingertips)
         analysis = FrameAnalysis(
-            detected_lines=class_count_source,
+            detected_lines=() if tracking_frame is not None else class_count_source,
             stable_grid=None,
             note_markers=(),
             fingertip_points=hand_tracking.fingertips,
@@ -779,7 +821,8 @@ def analyze_selected_lines_frame(
         apply_fret_refinement=False,
         yolo_detected_lines=yolo_support_lines,
     )
-    stable_grid = edge_refinement.grid
+    stable_grid = tracking_result.stable_grid if tracking_frame is not None else edge_refinement.grid
+    edge_refinement = replace(edge_refinement, grid=stable_grid)
     tracked_lines = tracking_result.tracked_lines
     class_counts = count_detected_classes(class_count_source)
     marker_grid, marker_edge_refinement = marker_grid_context(
@@ -794,25 +837,34 @@ def analyze_selected_lines_frame(
     note_markers = filter_note_markers_by_edge_frets(
         note_markers,
         marker_edge_refinement,
-        edge_supported_notes_only,
-        require_detected_fret_interval=not center_test_mode,
+        edge_supported_notes_only if tracking_frame is None else False,
+        require_detected_fret_interval=not center_test_mode and tracking_frame is None,
     )
     note_markers = note_marker_tracker.update(note_markers)
+    if tracking_frame is not None and tracking_result.tracking_mode == "selected_lines_hold":
+        note_markers = ()
+    if tracking_frame is not None:
+        note_markers = filter_visible_markers(
+            note_markers, stable_grid, frame_bgr.shape, tracking_frame.exclusion_mask, hide_occluded=False,
+        )
     hand_tracking = hand_tracker.process(frame_bgr, note_markers)
     quad_color = (255, 255, 255)
     if tracking_result.tracking_mode == "selected_lines_hold":
         quad_color = (0, 200, 255)
     elif tracking_result.tracking_mode == "selected_lines_reacquired":
         quad_color = (80, 255, 170)
-    annotated = draw_detected_lines(frame_bgr, tracked_lines)
+    annotated = frame_bgr.copy() if tracking_frame is not None else draw_detected_lines(frame_bgr, tracked_lines)
     annotated = draw_reference_quad(annotated, stable_grid, color=quad_color)
     if show_edge_guides:
-        annotated = draw_edge_guides(
-            annotated,
-            stable_grid,
-            edge_refinement=edge_refinement,
-            suppressed_fret_indices=suppressed_fret_indices,
-        )
+        if tracking_frame is not None:
+            annotated = draw_calibrated_guides(annotated, stable_grid)
+        else:
+            annotated = draw_edge_guides(
+                annotated,
+                stable_grid,
+                edge_refinement=edge_refinement,
+                suppressed_fret_indices=suppressed_fret_indices,
+            )
     annotated = draw_note_markers(
         annotated,
         note_markers,
@@ -880,6 +932,10 @@ class VideoWorker(QThread):
         self.tracker = FretboardTracker(max_history=5)
         self.note_marker_tracker = NoteMarkerTracker()
         self.selected_line_tracker = SelectedLineTracker(max_history=5)
+        self.hybrid_tracker = HybridSelectedLineTracker(self.selected_line_tracker)
+        self.occlusion_masker = HandOcclusionMasker()
+        self.latest_exclusion_mask = None
+        self.manual_tracking_requested = False
         self.string_line_tracker = StringLineTracker()
         self.hand_tracker = MediaPipeHandTracker()
         self.latest_frame_bgr: np.ndarray | None = None
@@ -887,6 +943,7 @@ class VideoWorker(QThread):
         self.selection_request = False
         self.selection_active = False
         self.pending_manual_selection: tuple[DetectedLine, DetectedLine, int] | None = None
+        self.pending_reference_fret_index: int | None = None
         self.suppressed_fret_indices: set[int] = set()
         self._running = True
 
@@ -923,9 +980,7 @@ class VideoWorker(QThread):
         if self.pending_manual_selection is not None:
             nut_line, reference_fret_line, _ = self.pending_manual_selection
             self.pending_manual_selection = (nut_line, reference_fret_line, reference_fret_index)
-        self.selected_line_tracker.set_reference_fret_index(reference_fret_index)
-        self.string_line_tracker.clear()
-        self.note_marker_tracker.clear()
+        self.pending_reference_fret_index = reference_fret_index
 
     def suppress_fret_index(self, fret_index: int) -> None:
         if fret_index < 0:
@@ -962,9 +1017,12 @@ class VideoWorker(QThread):
         reference_fret_index: int,
     ) -> None:
         self.pending_manual_selection = (nut_line, reference_fret_line, reference_fret_index)
+        self.manual_tracking_requested = True
 
     def clear_manual_tracking(self) -> None:
+        self.manual_tracking_requested = False
         self.selected_line_tracker.clear()
+        self.hybrid_tracker.clear()
         self.string_line_tracker.clear()
         self.note_marker_tracker.clear()
         self.cancel_line_selection()
@@ -990,6 +1048,15 @@ class VideoWorker(QThread):
         previous_frame_time = perf_counter()
 
         while self._running:
+            if self.pending_reference_fret_index is not None:
+                reference_index = self.pending_reference_fret_index
+                self.pending_reference_fret_index = None
+                if self.selected_line_tracker.is_active:
+                    self.selected_line_tracker.set_reference_fret_index(reference_index)
+                    if self.latest_frame_bgr is not None:
+                        self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
+                    self.string_line_tracker.clear()
+                    self.note_marker_tracker.clear()
             if self.pending_manual_selection is not None:
                 nut_line, reference_fret_line, reference_fret_index = self.pending_manual_selection
                 self.selected_line_tracker.initialize_from_lines(
@@ -997,6 +1064,8 @@ class VideoWorker(QThread):
                     reference_fret_line,
                     reference_fret_index,
                 )
+                if self.latest_frame_bgr is not None:
+                    self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
                 self.pending_manual_selection = None
                 self.selection_active = False
                 self.frozen_selection_lines = ()
@@ -1023,6 +1092,7 @@ class VideoWorker(QThread):
             suppressed_fret_indices = frozenset(self.suppressed_fret_indices)
 
             inference_start = perf_counter()
+            self.latest_exclusion_mask = self.occlusion_masker.process(frame_bgr)
 
             if self.selection_request:
                 detected_lines = predict_detected_lines(
@@ -1032,6 +1102,7 @@ class VideoWorker(QThread):
                     image_size=self.image_size,
                 )
                 self.selected_line_tracker.clear()
+                self.hybrid_tracker.clear()
                 class_counts = count_detected_classes(detected_lines)
                 stable_grid = self.tracker.update(
                     build_fretboard_grid(
@@ -1093,21 +1164,23 @@ class VideoWorker(QThread):
                 self.selection_request = False
                 self.selection_active = True
                 self.frozen_selection_lines = analysis.detected_lines
-            elif self.selected_line_tracker.is_active:
-                roi_detected_lines: tuple[DetectedLine, ...] = ()
-                search_roi = self.selected_line_tracker.search_roi(frame_bgr.shape)
-                if search_roi is not None:
-                    roi_detected_lines = predict_detected_lines(
+            elif self.selected_line_tracker.is_active or self.manual_tracking_requested:
+                def detect(roi):
+                    return predict_detected_lines(
                         model=model,
                         frame_bgr=frame_bgr,
-                        conf_threshold=max(TRACKING_CONF_FLOOR, self.conf_threshold * TRACKING_CONF_SCALE),
+                        conf_threshold=(
+                            max(TRACKING_CONF_FLOOR, self.conf_threshold * TRACKING_CONF_SCALE)
+                            if roi is not None else self.conf_threshold
+                        ),
                         image_size=self.image_size,
-                        roi=search_roi,
+                        roi=roi,
                     )
 
+                tracking_frame = self.hybrid_tracker.update(frame_bgr, detect, self.latest_exclusion_mask, diagnostics=True)
                 annotated, analysis = analyze_selected_lines_frame(
                     frame_bgr=frame_bgr,
-                    primary_detected_lines=roi_detected_lines,
+                    primary_detected_lines=tracking_frame.detected_lines,
                     fallback_detected_lines=None,
                     selected_line_tracker=self.selected_line_tracker,
                     note_marker_tracker=self.note_marker_tracker,
@@ -1119,6 +1192,7 @@ class VideoWorker(QThread):
                     edge_supported_notes_only=edge_supported_notes_only,
                     string_tracker=self.string_line_tracker,
                     suppressed_fret_indices=suppressed_fret_indices,
+                    tracking_frame=tracking_frame,
                 )
             else:
                 detected_lines = predict_detected_lines(
@@ -1233,6 +1307,7 @@ class VideoWorker(QThread):
             self.frame_ready.emit(bgr_to_qimage(annotated), stats)
 
         capture.release()
+        self.occlusion_masker.close()
         self.hand_tracker.close()
 
 
@@ -1291,7 +1366,7 @@ class MainWindow(QMainWindow):
         self.reference_fret_spin = QSpinBox()
         self.reference_fret_spin.setRange(1, 24)
         self.reference_fret_spin.setValue(12)
-        self.reference_fret_spin.setToolTip("클릭한 마지막 visible fret의 실제 프렛 번호입니다. 점이 밀리면 이 값을 직접 맞추세요.")
+        self.reference_fret_spin.setToolTip("클릭할 기준 프렛의 실제 번호를 먼저 지정하세요. 검출된 선 개수가 아닙니다.")
         self.reference_fret_spin.valueChanged.connect(self.handle_reference_fret_change)
 
         self.select_lines_button = QPushButton("Select Nut + Last Visible Fret")
@@ -1506,7 +1581,7 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             self.worker.set_reference_fret_index(int(value))
         if self.selection_stage == "idle":
-            self.mode_label.setText(f"Mode: manual last visible fret set to {int(value)}f")
+            self.mode_label.setText(f"Mode: actual reference fret set to {int(value)}f")
 
     def choose_model_file(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
@@ -1634,22 +1709,15 @@ class MainWindow(QMainWindow):
                 return
             self.selected_nut_line = selected_line
             self.selection_stage = "select_fret"
-            self.mode_label.setText("Mode: selected nut - click the last visible fret")
+            self.mode_label.setText(f"Mode: click the actual fret {self.reference_fret_spin.value()} wire")
         else:
             candidates = tuple(line for line in self.worker.frozen_selection_lines if line.kind == "fret")
             selected_line = find_nearest_line(image_point, candidates)
             if selected_line is None:
-                self.mode_label.setText("Mode: click closer to the last visible fret line")
+                self.mode_label.setText("Mode: click closer to the selected reference fret wire")
                 return
             self.selected_reference_line = selected_line
             if self.selected_nut_line is not None:
-                inferred_reference_fret = infer_selected_reference_fret_index(
-                    self.selected_nut_line,
-                    selected_line,
-                    self.worker.frozen_selection_lines,
-                )
-                if not self.reference_fret_manual_override:
-                    self.set_reference_fret_spin_value(inferred_reference_fret)
                 reference_fret_index = int(self.reference_fret_spin.value())
                 self.worker.apply_line_selection(
                     self.selected_nut_line,
@@ -1659,7 +1727,7 @@ class MainWindow(QMainWindow):
             self.selection_stage = "idle"
             self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
             self.mode_label.setText(
-                f"Mode: applying manual tracking ({self.reference_fret_spin.value()}f last visible reference)"
+                f"Mode: applying manual tracking ({self.reference_fret_spin.value()}f fixed reference)"
             )
 
         self.render_current_frame()
@@ -1714,7 +1782,7 @@ class MainWindow(QMainWindow):
         if self.selection_stage == "select_nut":
             instruction = "Click the YOLO-detected nut line"
         elif self.selection_stage == "select_fret":
-            instruction = "Click the YOLO-detected last visible fret line"
+            instruction = f"Click the actual fret {self.reference_fret_spin.value()} wire"
         elif self.selection_stage == "delete_fret":
             instruction = "Click a wrong edge fret to delete it"
         else:
@@ -1805,6 +1873,8 @@ class MainWindow(QMainWindow):
                 self.mode_label.setText(
                     f"Mode: full-frame reacquired ({stats.reference_fret_index}f reference)"
                 )
+            elif stats.tracking_mode == "selected_lines_motion":
+                self.mode_label.setText(f"Mode: image motion ({stats.reference_fret_index}f reference)")
             elif stats.tracking_mode == "selected_lines_hold":
                 self.mode_label.setText(
                     f"Mode: hold + reacquire ({stats.reference_fret_index}f reference)"

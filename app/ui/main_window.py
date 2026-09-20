@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import json
 
+import cv2
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QImage
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
@@ -28,11 +29,12 @@ from vision.fretboard_edge_refinement import EdgeRefinementResult
 from vision.fretboard_mapping import (
     DetectedLine,
     StableFretboardGrid,
-    infer_selected_reference_fret_index,
+    build_grid_from_reference_lines,
 )
+from vision.fretboard_registration import board_quad
 
-from pages.select_page import SelectPage
-from pages.admin_page import AdminPage
+from app.pages.select_page import SelectPage
+from app.pages.admin_page import AdminPage
 
 
 STATUS_TEXT = {
@@ -77,6 +79,8 @@ class MainWindow(QMainWindow):
         self.selection_stage = "idle"
         self.selected_nut_line: DetectedLine | None = None
         self.selected_reference_line: DetectedLine | None = None
+        self.manual_point_selection = False
+        self.selection_points: list[tuple[float, float]] = []
         self.latest_stable_grid: StableFretboardGrid | None = None
         self.latest_edge_refinement: EdgeRefinementResult | None = None
         self.reference_fret_manual_override = False
@@ -375,14 +379,22 @@ class MainWindow(QMainWindow):
             self.selection_stage = "select_nut"
             self.video_status_label.setText("화면에서 너트 선을 클릭하세요.")
         elif self.selection_stage == "idle":
-            if stats.tracking_mode == "selected_lines_tracking":
+            if stats.tracking_mode == "calibration_required":
+                self.video_status_label.setText("먼저 기준 프렛 번호를 지정하고 지판 맞추기를 눌러주세요.")
+            elif stats.tracking_mode in {"selected_lines_tracking", "selected_lines_reacquired"}:
                 self.video_status_label.setText("지판 맞춤 완료")
+            elif stats.tracking_mode == "selected_lines_motion":
+                self.video_status_label.setText("지판 움직임 추적 중")
             elif stats.tracking_mode == "selected_lines_hold":
                 self.video_status_label.setText("지판을 다시 찾는 중")
+            elif stats.tracking_mode == "selected_lines_reference_weak":
+                self.video_status_label.setText("기준 영상이 불충분합니다. 손을 잠깐 떼고 지판을 선명하게 다시 맞춰주세요.")
             elif stats.tracking_mode == "selected_lines_lost":
-                self.video_status_label.setText("지판을 놓쳤습니다. 다시 맞춰주세요.")
+                self.video_status_label.setText("기준 지판을 다시 찾는 중 · 계속 실패하면 다시 맞춰주세요.")
             else:
                 self.video_status_label.setText("카메라 실행 중")
+            if stats.tracking_mode.startswith("selected_lines_") and not stats.hand_mask_available:
+                self.video_status_label.setText(self.video_status_label.text() + " · 손 가림 감지 비활성")
 
         self.render_current_frame()
         self.marker_status_label.setText(f"가이드 점 {stats.marker_count}개")
@@ -429,6 +441,8 @@ class MainWindow(QMainWindow):
             return
 
         self.selection_stage = "await_frame"
+        self.manual_point_selection = self.tracking_panel.manual_points_checkbox.isChecked()
+        self.selection_points = []
         self.selected_nut_line = None
         self.selected_reference_line = None
         self.video_label.setCursor(Qt.CursorShape.CrossCursor)
@@ -455,30 +469,42 @@ class MainWindow(QMainWindow):
         if image_point is None:
             return
 
-        if self.selection_stage == "select_nut":
-            candidates = tuple(line for line in self.video_worker.frozen_selection_lines if line.kind == "nut")
+        if self.manual_point_selection:
+            self.selection_points.append(image_point)
+            if len(self.selection_points) % 2:
+                self.render_current_frame()
+                return
+            first, second = self.selection_points[-2:]
+            if (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2 < 64:
+                self.selection_points = self.selection_points[:-2]
+                self.video_status_label.setText("선의 양 끝점을 충분히 떨어뜨려 지정해주세요.")
+                self.render_current_frame()
+                return
+            kind = "nut" if self.selection_stage == "select_nut" else "fret"
+            selected_line = DetectedLine(kind, first, second, 1.0)
+        else:
+            kind = "nut" if self.selection_stage == "select_nut" else "fret"
+            candidates = tuple(line for line in self.video_worker.frozen_selection_lines if line.kind == kind)
             selected_line = find_nearest_line(image_point, candidates)
             if selected_line is None:
-                self.video_status_label.setText("너트 선에 더 가깝게 클릭해주세요.")
+                self.video_status_label.setText("선에 더 가깝게 클릭하거나, 양 끝점 직접 지정을 사용해주세요.")
                 return
+
+        if self.selection_stage == "select_nut":
             self.selected_nut_line = selected_line
             self.selection_stage = "select_fret"
-            self.video_status_label.setText("가장 멀리 보이는 프렛 선을 클릭하세요.")
+            self.video_status_label.setText(f"실제 {self.reference_fret_spin.value()}프렛의 금속선을 클릭하세요.")
         else:
-            candidates = tuple(line for line in self.video_worker.frozen_selection_lines if line.kind == "fret")
-            selected_line = find_nearest_line(image_point, candidates)
-            if selected_line is None:
-                self.video_status_label.setText("프렛 선에 더 가깝게 클릭해주세요.")
-                return
             self.selected_reference_line = selected_line
             if self.selected_nut_line is not None:
-                inferred_reference_fret = infer_selected_reference_fret_index(
-                    self.selected_nut_line,
-                    selected_line,
-                    self.video_worker.frozen_selection_lines,
-                )
-                if not self.reference_fret_manual_override:
-                    self.set_reference_fret_spin_value(inferred_reference_fret)
+                grid = build_grid_from_reference_lines(self.selected_nut_line, selected_line, int(self.reference_fret_spin.value()))
+                if grid is None or not cv2.isContourConvex(board_quad(grid)) or abs(cv2.contourArea(board_quad(grid))) < 100:
+                    if self.manual_point_selection:
+                        self.selection_points = self.selection_points[:2]
+                    self.selected_reference_line = None
+                    self.video_status_label.setText("너트와 구분되는 기준 프렛의 양 끝점을 다시 선택해주세요.")
+                    self.render_current_frame()
+                    return
                 self.video_worker.apply_line_selection(
                     self.selected_nut_line,
                     selected_line,
@@ -495,6 +521,9 @@ class MainWindow(QMainWindow):
             selection_stage=self.selection_stage,
             selected_nut_line=self.selected_nut_line,
             selected_reference_line=self.selected_reference_line,
+            selection_points=tuple(self.selection_points) if self.manual_point_selection else (),
+            manual_points=self.manual_point_selection,
+            reference_fret_index=int(self.reference_fret_spin.value()),
         )
 
     def resizeEvent(self, event) -> None:
