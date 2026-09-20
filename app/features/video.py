@@ -118,6 +118,7 @@ class PracticeVideoWorker(QThread):
         self.selection_request = False
         self.selection_active = False
         self.pending_manual_selection: tuple[DetectedLine, DetectedLine, int] | None = None
+        self.pending_calibrated_selection: tuple[StableFretboardGrid, int] | None = None
         self.pending_reference_fret_index: int | None = None
         self._running = True
 
@@ -165,6 +166,29 @@ class PracticeVideoWorker(QThread):
         self.selection_active = False
         self.frozen_selection_lines = ()
         self.pending_manual_selection = None
+        self.pending_calibrated_selection = None
+
+    def apply_calibrated_selection(self, grid: StableFretboardGrid, reference_index: int) -> None:
+        self.pending_manual_selection = None
+        self.pending_reference_fret_index = None
+        self.pending_calibrated_selection = (grid, reference_index)
+        self.manual_tracking_requested = True
+
+    def _apply_pending_calibration(self) -> None:
+        pending = self.pending_calibrated_selection
+        if pending is None:
+            return
+        self.pending_calibrated_selection = None
+        grid, reference_index = pending
+        self.selected_line_tracker.clear()
+        self.selected_line_tracker.reference_fret_index = reference_index
+        self.selected_line_tracker.accept_registered_grid(grid)
+        if self.latest_frame_bgr is not None:
+            self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
+        self.note_marker_tracker.clear()
+        self.string_line_tracker.clear()
+        self.selection_active = False
+        self.frozen_selection_lines = ()
 
     def apply_line_selection(
         self,
@@ -204,6 +228,7 @@ class PracticeVideoWorker(QThread):
         previous_frame_time = perf_counter()
 
         while self._running:
+            self._apply_pending_calibration()
             if self.pending_reference_fret_index is not None:
                 reference_index = self.pending_reference_fret_index
                 self.pending_reference_fret_index = None

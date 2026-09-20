@@ -4,7 +4,6 @@ from pathlib import Path
 import os
 import json
 
-import cv2
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QImage
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
@@ -29,9 +28,8 @@ from vision.fretboard_edge_refinement import EdgeRefinementResult
 from vision.fretboard_mapping import (
     DetectedLine,
     StableFretboardGrid,
-    build_grid_from_reference_lines,
 )
-from vision.fretboard_registration import board_quad
+from vision.fretboard_calibration import build_calibrated_grid
 
 from app.pages.select_page import SelectPage
 from app.pages.admin_page import AdminPage
@@ -78,6 +76,7 @@ class MainWindow(QMainWindow):
         self.practice_running = False
         self.selection_stage = "idle"
         self.selected_nut_line: DetectedLine | None = None
+        self.selected_middle_line: DetectedLine | None = None
         self.selected_reference_line: DetectedLine | None = None
         self.manual_point_selection = False
         self.selection_points: list[tuple[float, float]] = []
@@ -307,8 +306,8 @@ class MainWindow(QMainWindow):
         if self._updating_reference_fret_spin:
             return
         self.reference_fret_manual_override = True
-        if self.video_worker is not None:
-            self.video_worker.set_reference_fret_index(int(value))
+        # These fields configure the NEXT calibration. Relabelling an existing
+        # model would silently throw away its measured middle correspondence.
 
     def handle_mode_change(self, _index: int = 0) -> None:
         self.refresh_auto_speed_controls()
@@ -417,6 +416,7 @@ class MainWindow(QMainWindow):
             self.video_label.reset_placeholder()
         self.video_status_label.setText("카메라 대기")
         self.refresh_marker_status()
+        self.render_current_frame()
 
     def refresh_marker_status(self) -> None:
         self.marker_status_label.setText("가이드 점 0개")
@@ -433,6 +433,11 @@ class MainWindow(QMainWindow):
             self.practice_tab_strip.set_data([])
 
     def begin_line_selection(self) -> None:
+        middle = self.tracking_panel.middle_fret_spin.value()
+        last = self.reference_fret_spin.value()
+        if not 0 < middle < last:
+            self.video_status_label.setText("중간·끝 기준 프렛 번호를 입력해주세요. 중간 번호는 끝 번호보다 작아야 합니다.")
+            return
         if self.video_worker is None or not self.video_worker.isRunning():
             QMessageBox.information(self, "카메라 필요", "카메라를 먼저 시작해주세요.")
             return
@@ -444,9 +449,11 @@ class MainWindow(QMainWindow):
         self.manual_point_selection = self.tracking_panel.manual_points_checkbox.isChecked()
         self.selection_points = []
         self.selected_nut_line = None
+        self.selected_middle_line = None
         self.selected_reference_line = None
         self.video_label.setCursor(Qt.CursorShape.CrossCursor)
         self.video_status_label.setText("지판 맞춤을 준비하는 중입니다.")
+        self.render_current_frame()
 
     def clear_manual_tracking(self) -> None:
         self.selection_stage = "idle"
@@ -462,7 +469,7 @@ class MainWindow(QMainWindow):
         return self.video_label.map_label_point_to_image(label_x, label_y)
 
     def handle_video_click(self, label_x: float, label_y: float) -> None:
-        if self.selection_stage not in {"select_nut", "select_fret"} or self.video_worker is None:
+        if self.selection_stage not in {"select_nut", "select_middle", "select_fret"} or self.video_worker is None:
             return
 
         image_point = self.map_label_click_to_image(label_x, label_y)
@@ -492,24 +499,32 @@ class MainWindow(QMainWindow):
 
         if self.selection_stage == "select_nut":
             self.selected_nut_line = selected_line
+            self.selection_stage = "select_middle"
+            self.video_status_label.setText(f"실제 {self.tracking_panel.middle_fret_spin.value()}프렛의 금속선을 클릭하세요.")
+        elif self.selection_stage == "select_middle":
+            self.selected_middle_line = selected_line
+            self.selected_reference_line = selected_line
             self.selection_stage = "select_fret"
             self.video_status_label.setText(f"실제 {self.reference_fret_spin.value()}프렛의 금속선을 클릭하세요.")
         else:
             self.selected_reference_line = selected_line
             if self.selected_nut_line is not None:
-                grid = build_grid_from_reference_lines(self.selected_nut_line, selected_line, int(self.reference_fret_spin.value()))
-                if grid is None or not cv2.isContourConvex(board_quad(grid)) or abs(cv2.contourArea(board_quad(grid))) < 100:
+                try:
+                    grid = build_calibrated_grid(
+                        self.selected_nut_line, self.selected_middle_line,
+                        self.tracking_panel.middle_fret_spin.value(), selected_line,
+                        self.reference_fret_spin.value(),
+                    )
+                except ValueError as error:
                     if self.manual_point_selection:
                         self.selection_points = self.selection_points[:2]
+                    self.selection_stage = "select_middle"
+                    self.selected_middle_line = None
                     self.selected_reference_line = None
-                    self.video_status_label.setText("너트와 구분되는 기준 프렛의 양 끝점을 다시 선택해주세요.")
+                    self.video_status_label.setText(str(error))
                     self.render_current_frame()
                     return
-                self.video_worker.apply_line_selection(
-                    self.selected_nut_line,
-                    selected_line,
-                    int(self.reference_fret_spin.value()),
-                )
+                self.video_worker.apply_calibrated_selection(grid, self.reference_fret_spin.value())
             self.selection_stage = "idle"
             self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
             self.video_status_label.setText("지판 맞춤을 적용하는 중입니다.")
@@ -517,13 +532,16 @@ class MainWindow(QMainWindow):
         self.render_current_frame()
 
     def render_current_frame(self) -> None:
+        self.reference_fret_spin.setEnabled(self.selection_stage == "idle")
+        self.tracking_panel.middle_fret_spin.setEnabled(self.selection_stage == "idle")
         self.video_label.render_frame(
             selection_stage=self.selection_stage,
             selected_nut_line=self.selected_nut_line,
             selected_reference_line=self.selected_reference_line,
             selection_points=tuple(self.selection_points) if self.manual_point_selection else (),
             manual_points=self.manual_point_selection,
-            reference_fret_index=int(self.reference_fret_spin.value()),
+            reference_fret_index=int(self.tracking_panel.middle_fret_spin.value()
+                                     if self.selection_stage == "select_middle" else self.reference_fret_spin.value()),
         )
 
     def resizeEvent(self, event) -> None:

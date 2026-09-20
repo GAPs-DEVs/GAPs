@@ -70,7 +70,7 @@ class VideoSurface(QLabel):
             return
 
         image = self.current_image
-        if selection_stage in {"select_nut", "select_fret"}:
+        if selection_stage in {"select_nut", "select_middle", "select_fret"}:
             image = self._decorate_selection_frame(
                 image,
                 selection_stage,
@@ -125,7 +125,7 @@ class VideoSurface(QLabel):
         for x, y in selection_points:
             painter.drawEllipse(int(x) - 5, int(y) - 5, 10, 10)
         instruction = "너트 선을 클릭하세요"
-        if selection_stage == "select_fret":
+        if selection_stage in {"select_middle", "select_fret"}:
             instruction = f"실제 {reference_fret_index}프렛의 금속선을 클릭하세요"
         if manual_points:
             name = "너트" if selection_stage == "select_nut" else f"실제 {reference_fret_index}프렛"
