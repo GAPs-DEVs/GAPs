@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
 
 import cv2
 import numpy as np
@@ -75,8 +76,13 @@ def grid_quad(grid: StableFretboardGrid) -> np.ndarray:
 
 
 class FretboardMotionTracker:
-    def __init__(self) -> None:
+    def __init__(self, *, blur_size: int = 1) -> None:
+        self.blur_size = blur_size
         self.clear()
+
+    def _gray(self, frame: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return cv2.GaussianBlur(gray, (self.blur_size, self.blur_size), 0) if self.blur_size > 1 else gray
 
     def clear(self) -> None:
         self.previous_gray: np.ndarray | None = None
@@ -87,7 +93,7 @@ class FretboardMotionTracker:
     def estimate(self, frame: np.ndarray, grid: StableFretboardGrid | None, exclusion_mask=None,
                  *, initial_homography: np.ndarray | None = None) -> np.ndarray | None:
         self.tracked_points = None
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = self._gray(frame)
         if (
             grid is None or not grid.ordered_fret_lines
             or self.previous_gray is None or self.previous_gray.shape != gray.shape
@@ -173,7 +179,7 @@ class FretboardMotionTracker:
         if grid is None or not grid.ordered_fret_lines:
             self.clear()
             return
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = self._gray(frame)
         mask = np.zeros(gray.shape, dtype=np.uint8)
         cv2.fillConvexPoly(mask, np.rint(grid_quad(grid)).astype(np.int32), 255)
         mask = cv2.erode(mask, np.ones((5, 5), dtype=np.uint8))
@@ -225,6 +231,7 @@ class HybridSelectedLineTracker:
         self.motion.clear()
         self.reference.clear()
         self.anchor_motion = FretboardMotionTracker()
+        self.coarse_motion = FretboardMotionTracker(blur_size=5)
         self.anchor_grid: StableFretboardGrid | None = None
         self.reference_fret_index: int | None = None
         self.last_pose = np.eye(3)
@@ -232,6 +239,8 @@ class HybridSelectedLineTracker:
         self.last_full_search = -3
         self.pending_recovery: StableFretboardGrid | None = None
         self.was_visible = False
+        self.last_verified_at = float('-inf')
+        self.continuity_frames = 0
 
     def seed(self, frame: np.ndarray, exclusion_mask=None) -> None:
         self.clear()
@@ -241,8 +250,33 @@ class HybridSelectedLineTracker:
             return
         self.motion.commit(frame, self.anchor_grid, refresh=True, exclusion_mask=exclusion_mask)
         self.anchor_motion.commit(frame, self.anchor_grid, refresh=True, exclusion_mask=exclusion_mask)
+        self.coarse_motion.commit(frame, self.anchor_grid, refresh=True, exclusion_mask=exclusion_mask)
         self.reference.seed(frame, self.anchor_grid, exclusion_mask)
         self.was_visible = True
+        self.last_verified_at = monotonic()
+
+    def _brief_continuity(self, frame, exclusion_mask):
+        """Fresh reference correspondence through brief blur, never stale dots.
+
+        Coarse evidence cannot initialize/reacquire tracking, survive a hard
+        loss, or extend its own deadline. The original feature set stays fixed.
+        """
+        if (not self.was_visible or self.continuity_frames >= 6
+                or monotonic() - self.last_verified_at > .25):
+            return None
+        pose = self.coarse_motion.estimate(
+            frame, self.anchor_grid, exclusion_mask, initial_homography=self.last_pose,
+        )
+        if pose is None:
+            return None
+        old = grid_quad(transform_grid(self.anchor_grid, self.last_pose))
+        new_grid = transform_grid(self.anchor_grid, pose)
+        new = grid_quad(new_grid)
+        short_edge = min(np.linalg.norm(old[1] - old[0]), np.linalg.norm(old[2] - old[3]))
+        if (not valid_board_projection(new_grid, frame.shape)
+                or np.max(np.linalg.norm(new - old, axis=1)) > max(12., short_edge * .12)):
+            return None
+        return pose if self.reference.validate(frame, pose, exclusion_mask, coarse=True) else None
 
     def _verified(self, frame, pose, exclusion_mask):
         if pose is None or not np.isfinite(pose).all():
@@ -316,6 +350,12 @@ class HybridSelectedLineTracker:
         # Revalidate the last pose against this frame before allowing a hand to
         # nudge the neck. This is fresh visual evidence, not a stale-pose hold.
         pose = self.reference.select_pose(frame, pose, self.last_pose, exclusion_mask)
+        continuity = False
+        if pose is None:
+            candidate = self._brief_continuity(frame, exclusion_mask)
+            if candidate is not None:
+                pose = candidate
+                continuity = not self.reference.validate(frame, pose, exclusion_mask)
 
         # Keeping diagnostics on a separate cadence makes them incapable of
         # redefining geometry when fingers produce convincing false segments.
@@ -332,11 +372,17 @@ class HybridSelectedLineTracker:
         self.last_pose = pose
         self.tracker.reference_fret_index = self.reference_fret_index
         self.tracker.accept_registered_grid(grid)
-        mode = 'selected_lines_reacquired' if recovered or not self.was_visible else 'selected_lines_motion'
+        mode = ('selected_lines_continuity' if continuity else
+                'selected_lines_reacquired' if recovered or not self.was_visible else 'selected_lines_motion')
+        if continuity:
+            self.continuity_frames += 1
+        else:
+            self.continuity_frames = 0
+            self.last_verified_at = monotonic()
         self.was_visible = True
         self.pending_recovery = None
         tracking_mask = self.reference.tracking_exclusion(frame, pose, exclusion_mask)
-        self.motion.commit(frame, grid, refresh=True, exclusion_mask=tracking_mask)
+        self.motion.commit(frame, grid, refresh=not continuity, exclusion_mask=tracking_mask)
         # The seed image, its feature positions and the seed grid stay untouched.
         # Missing frets are projected from that same model on every frame.
         result = SelectedTrackingResult(grid, (grid.nut_line, grid.ordered_fret_lines[-1]), mode)

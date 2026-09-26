@@ -73,17 +73,19 @@ CLASS_COLORS = {
     "fret": (80, 190, 255),
     "nut": (70, 255, 150),
 }
-NOTE_MARKER_COLOR = (0, 218, 255)
-NOTE_MARKER_MATCH_COLOR = (80, 255, 120)
+NOTE_MARKER_COLOR = (235, 211, 79)  # Soft cyan, BGR.
+NOTE_MARKER_MATCH_COLOR = (160, 224, 80)  # Mint feedback.
+NOTE_MARKER_OUTLINE_COLOR = (35, 29, 21)
+NOTE_MARKER_CORE_COLOR = (245, 250, 252)
 FINGERTIP_COLOR = (255, 180, 80)
 EDGE_GUIDE_STRING_COLOR = (80, 255, 120)
 EDGE_GUIDE_INFERRED_STRING_COLOR = (180, 185, 190)
 EDGE_GUIDE_FRET_COLOR = (80, 190, 255)
 EDGE_GUIDE_INFERRED_FRET_COLOR = (165, 175, 185)
 EDGE_GUIDE_INTERSECTION_COLOR = (0, 230, 255)
-OPEN_NOTE_MARKER_RADIUS = 7
+OPEN_NOTE_MARKER_RADIUS = 6
 OPEN_NOTE_MARKER_THICKNESS = 2
-FRETTED_NOTE_MARKER_RADIUS = 6
+FRETTED_NOTE_MARKER_RADIUS = 4
 CONFIRMED_FRET_INTERVAL_MIN_GAP_RATIO = 0.62
 CONFIRMED_FRET_INTERVAL_MAX_GAP_RATIO = 1.55
 
@@ -377,12 +379,23 @@ def draw_note_markers(
     annotated = frame_bgr.copy()
     matched_index_set = set(matched_marker_indices)
     for marker_index, marker in enumerate(note_markers):
-        center = tuple(int(round(value)) for value in marker.point_xy)
+        # Subpixel centers keep the small glyph smooth during slow motion.
+        shift = 4
+        scale = 1 << shift
+        center = tuple(int(round(value * scale)) for value in marker.point_xy)
         color = NOTE_MARKER_MATCH_COLOR if marker_index in matched_index_set else NOTE_MARKER_COLOR
         if marker.is_open:
-            cv2.circle(annotated, center, OPEN_NOTE_MARKER_RADIUS, color, OPEN_NOTE_MARKER_THICKNESS, cv2.LINE_AA)
+            # Open strings sit directly on the bright nut. A dark backing,
+            # thicker ring and light center keep the target legible there.
+            radius = OPEN_NOTE_MARKER_RADIUS * scale
+            cv2.circle(annotated, center, radius + 2 * scale, NOTE_MARKER_OUTLINE_COLOR, -1, cv2.LINE_AA, shift)
+            cv2.circle(annotated, center, radius, color, OPEN_NOTE_MARKER_THICKNESS, cv2.LINE_AA, shift)
+            cv2.circle(annotated, center, 2 * scale, NOTE_MARKER_CORE_COLOR, -1, cv2.LINE_AA, shift)
         else:
-            cv2.circle(annotated, center, FRETTED_NOTE_MARKER_RADIUS, color, -1, cv2.LINE_AA)
+            cv2.circle(annotated, center, (FRETTED_NOTE_MARKER_RADIUS + 1) * scale,
+                       NOTE_MARKER_OUTLINE_COLOR, -1, cv2.LINE_AA, shift)
+            cv2.circle(annotated, center, FRETTED_NOTE_MARKER_RADIUS * scale, color, -1, cv2.LINE_AA, shift)
+            cv2.circle(annotated, center, scale, NOTE_MARKER_CORE_COLOR, -1, cv2.LINE_AA, shift)
     return annotated
 
 
@@ -1873,7 +1886,7 @@ class MainWindow(QMainWindow):
                 self.mode_label.setText(
                     f"Mode: full-frame reacquired ({stats.reference_fret_index}f reference)"
                 )
-            elif stats.tracking_mode == "selected_lines_motion":
+            elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity"}:
                 self.mode_label.setText(f"Mode: image motion ({stats.reference_fret_index}f reference)")
             elif stats.tracking_mode == "selected_lines_hold":
                 self.mode_label.setText(

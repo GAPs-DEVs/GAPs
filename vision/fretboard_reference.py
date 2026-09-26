@@ -144,7 +144,8 @@ class FretboardVisualReference:
         visible_area, _ = cv2.intersectConvexConvex(projected, screen)
         return visible_area / area >= 0.55
 
-    def validate(self, frame: np.ndarray, homography: np.ndarray, exclusion_mask=None) -> bool:
+    def validate(self, frame: np.ndarray, homography: np.ndarray, exclusion_mask=None,
+                 *, coarse: bool = False) -> bool:
         if not self.is_ready or not self._valid_projection(homography, frame.shape):
             return False
         try:
@@ -154,6 +155,14 @@ class FretboardVisualReference:
         height, width = self.template.shape
         current = cv2.warpPerspective(_gray(frame), current_to_canonical, (width, height)).astype(np.float32)
         current = cv2.GaussianBlur(current, (5, 5), 0.85)
+        template = self.template
+        template_dx = self._template_dx
+        if coarse:
+            # Only the bounded continuity path may use this scale. Compare both
+            # images at the same scale; keep all spatial and correlation gates.
+            template = cv2.GaussianBlur(template, (9, 9), 2.)
+            current = cv2.GaussianBlur(current, (9, 9), 2.)
+            template_dx = cv2.Sobel(template, cv2.CV_32F, 1, 0, ksize=3)
         current_dx = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3)
         current_mask = np.full(frame.shape[:2], 255, dtype=np.uint8)
         if exclusion_mask is not None:
@@ -170,7 +179,7 @@ class FretboardVisualReference:
             if support.mean() < 0.55:
                 continue
             available += 1
-            reference_pixels = self.template[ys, xs][support]
+            reference_pixels = template[ys, xs][support]
             current_pixels = current[ys, xs][support]
             # Local centering and normalization make this insensitive to additive
             # illumination and moderate contrast changes, without moving pixels.
@@ -179,7 +188,7 @@ class FretboardVisualReference:
             # independent evidence of lateral position and width as well.
             if (reference_pixels.std() >= 2.0 and current_pixels.std() >= 1.5
                     and _correlation(reference_pixels, current_pixels) >= 0.72
-                    and _correlation(self._template_dx[ys, xs][support], current_dx[ys, xs][support]) >= 0.55):
+                    and _correlation(template_dx[ys, xs][support], current_dx[ys, xs][support]) >= 0.55):
                 accepted.append(((xs.start + xs.stop) / (2 * width), (ys.start + ys.stop) / (2 * height)))
         if len(accepted) < max(10, int(np.ceil(len(self._tiles) * 0.45))) or len(accepted) < available * 0.6:
             return False
