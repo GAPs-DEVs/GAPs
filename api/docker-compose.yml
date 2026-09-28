@@ -1,0 +1,25 @@
+name: guitar-practice-api
+
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    ports:
+      # Accessible to EC2 curl and host Nginx; do not open port 8000 externally.
+      - "127.0.0.1:8000:8000"
+    networks:
+      - database
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  database:
+    # Created by the DB branch's Compose project; start the DB first.
+    # This API project never creates, deletes, or migrates the database.
+    external: true
+    name: guitar-practice-db_default
