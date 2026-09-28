@@ -42,6 +42,7 @@ GAP_RATIO_MIN = 0.55
 GAP_RATIO_MAX = 1.15
 SELECTED_LINE_HOLD_FRAMES = 12
 SELECTED_LINE_CLEAR_FRAMES = 20
+SELECTED_LINE_MOTION_FRAMES = 8
 SELECTED_LINE_ROI_EXPAND_RATIO = 2.0
 SELECTED_LINE_ROI_PADDING = 72.0
 EDGE_SUPPORT_ANGLE_MIN = 0.92
@@ -74,6 +75,7 @@ class DetectedLine:
     p0: tuple[float, float]
     p1: tuple[float, float]
     confidence: float
+    endpoints_observed: bool = True
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,16 @@ class NoteMarkerTracker:
 
     def clear(self) -> None:
         self._states.clear()
+
+    def apply_motion(self, homography: np.ndarray) -> None:
+        """Move smoothing history with the guitar, so smoothing adds no motion lag."""
+        self._states = {
+            key: TrackedMarkerState(
+                point_xy=project_homography(homography, *state.point_xy),
+                missing_frames=state.missing_frames,
+            )
+            for key, state in self._states.items()
+        }
 
     def update(self, markers: Sequence[NoteMarker]) -> tuple[NoteMarker, ...]:
         if not markers:
@@ -217,6 +229,35 @@ class SelectedLineTracker:
         self.last_stable_grid = None
         self.missed_frames = 0
 
+    def apply_motion(self, homography: np.ndarray) -> None:
+        """Predict this frame's geometry without counting prediction as detection."""
+        if self.current_nut_line is not None:
+            self.current_nut_line = transform_line(self.current_nut_line, homography)
+        if self.current_reference_fret_line is not None:
+            self.current_reference_fret_line = transform_line(self.current_reference_fret_line, homography)
+        self.nut_history = deque(
+            (transform_line(line, homography) for line in self.nut_history), maxlen=self.max_history,
+        )
+        self.reference_history = deque(
+            (transform_line(line, homography) for line in self.reference_history), maxlen=self.max_history,
+        )
+        if self.last_stable_grid is not None:
+            self.last_stable_grid = transform_grid(self.last_stable_grid, homography)
+
+    def accept_registered_grid(self, grid: StableFretboardGrid) -> None:
+        """Accept one coherent registration without refitting individual endpoints."""
+        self.last_stable_grid = grid
+        self.current_nut_line = grid.nut_line
+        self.current_reference_fret_line = grid.ordered_fret_lines[-1]
+        self.nut_history.clear()
+        self.reference_history.clear()
+        self.nut_history.append(self.current_nut_line)
+        self.reference_history.append(self.current_reference_fret_line)
+        self.missed_frames = 0
+
+    def hold_or_lose(self) -> SelectedTrackingResult:
+        return self._handle_hold_or_loss()
+
     def initialize_from_lines(
         self,
         nut_line: DetectedLine,
@@ -297,6 +338,7 @@ class SelectedLineTracker:
         self,
         primary_detected_lines: Sequence[DetectedLine],
         fallback_detected_lines: Sequence[DetectedLine] | None = None,
+        motion_grid: StableFretboardGrid | None = None,
     ) -> SelectedTrackingResult:
         if (
             not self.is_active
@@ -354,6 +396,15 @@ class SelectedLineTracker:
                     tracking_mode="selected_lines_reacquired",
                     support_lines=fallback_support_lines,
                 )
+
+        if motion_grid is not None and self.missed_frames < SELECTED_LINE_MOTION_FRAMES:
+            self.missed_frames += 1
+            self.last_stable_grid = motion_grid
+            return SelectedTrackingResult(
+                stable_grid=motion_grid,
+                tracked_lines=self._tracked_lines_from_grid(motion_grid),
+                tracking_mode="selected_lines_motion",
+            )
 
         combined_lines = tuple(primary_detected_lines) + tuple(fallback_detected_lines or ())
         hold_grid = self._update_partial_lines(combined_lines)
@@ -1424,14 +1475,16 @@ def interpolate_points(start: np.ndarray, end: np.ndarray, ratio: float) -> np.n
 
 def orient_line_for_screen(line: DetectedLine) -> DetectedLine:
     if (line.p1[1], line.p1[0]) < (line.p0[1], line.p0[0]):
-        return DetectedLine(kind=line.kind, p0=line.p1, p1=line.p0, confidence=line.confidence)
+        return DetectedLine(kind=line.kind, p0=line.p1, p1=line.p0, confidence=line.confidence,
+                            endpoints_observed=line.endpoints_observed)
     return line
 
 
 def orient_line_like_reference(line: DetectedLine, reference_direction: np.ndarray) -> DetectedLine:
     vector = line_vector(line)
     if float(np.dot(vector, reference_direction)) < 0:
-        return DetectedLine(kind=line.kind, p0=line.p1, p1=line.p0, confidence=line.confidence)
+        return DetectedLine(kind=line.kind, p0=line.p1, p1=line.p0, confidence=line.confidence,
+                            endpoints_observed=line.endpoints_observed)
     return line
 
 
@@ -1444,6 +1497,7 @@ def median_line(lines: Sequence[DetectedLine], kind: str) -> DetectedLine:
         p0=point_tuple(np.median(p0_values, axis=0)),
         p1=point_tuple(np.median(p1_values, axis=0)),
         confidence=float(np.median(confidence_values)),
+        endpoints_observed=all(line.endpoints_observed for line in lines),
     )
 
 
@@ -1475,6 +1529,27 @@ def project_homography(
         return (0.0, 0.0)
     projected /= projected[2]
     return (float(projected[0]), float(projected[1]))
+
+
+def transform_line(line: DetectedLine, homography: np.ndarray) -> DetectedLine:
+    return DetectedLine(
+        kind=line.kind,
+        p0=project_homography(homography, *line.p0),
+        p1=project_homography(homography, *line.p1),
+        confidence=line.confidence,
+        endpoints_observed=line.endpoints_observed,
+    )
+
+
+def transform_grid(grid: StableFretboardGrid, homography: np.ndarray) -> StableFretboardGrid:
+    return StableFretboardGrid(
+        nut_line=transform_line(grid.nut_line, homography),
+        ordered_fret_lines=tuple(transform_line(line, homography) for line in grid.ordered_fret_lines),
+        string_crossings=tuple(
+            tuple(project_homography(homography, *point) for point in row)
+            for row in grid.string_crossings
+        ),
+    )
 
 
 def build_grid_from_lines(

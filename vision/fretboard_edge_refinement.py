@@ -12,6 +12,7 @@ from vision.fretboard_mapping import (
     DetectedLine,
     StableFretboardGrid,
     compute_string_crossings,
+    infer_indexed_fret_lines_from_reference_grid,
     intersect_infinite_lines,
     line_length,
     line_midpoint,
@@ -350,10 +351,16 @@ def yolo_fret_fits_from_detected_lines(
     duplicate_distance = yolo_fret_duplicate_distance_threshold(grid, current_nut_line)
     ordered_candidates = merge_ordered_yolo_fret_duplicates(candidates, duplicate_distance)
     confirmed_indices: list[int] = []
-    for fret_index, (_, _, fitted_line) in enumerate(ordered_candidates):
-        if fret_index >= len(fitted_lines):
-            break
+    # Missing detections must leave holes, not renumber all subsequent frets.
+    indexed_lines = infer_indexed_fret_lines_from_reference_grid(
+        grid, tuple(line for _, line, _ in ordered_candidates),
+    )
+    for one_based_index, line in indexed_lines:
+        fret_index = one_based_index - 1
         if fret_index in suppressed_indices or not 0 <= fret_index < len(fitted_lines):
+            continue
+        fitted_line = canonical_y_fit_from_image_line(line, canonical)
+        if fitted_line is None:
             continue
         fitted_lines[fret_index] = fitted_line
         confirmed_indices.append(fret_index)
