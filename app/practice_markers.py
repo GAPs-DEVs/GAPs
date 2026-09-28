@@ -10,7 +10,6 @@ from vision.fretboard_mapping import (
     point_array,
     point_tuple,
 )
-from vision.marker_visibility import open_string_marker
 
 
 def screen_string_index(string_number: int, reverse_strings: bool = False) -> int:
@@ -38,9 +37,14 @@ def build_practice_step_note_markers(
 
         fret_index = note.fret_number
         if fret_index == 0:
-            marker = open_string_marker(grid, string_index)
-            if marker is not None:
-                markers.append(marker)
+            markers.append(
+                NoteMarker(
+                    string_index=string_index,
+                    fret_index=0,
+                    point_xy=grid.string_crossings[0][string_index],
+                    is_open=True,
+                )
+            )
             continue
 
         if fret_index >= len(grid.string_crossings):
