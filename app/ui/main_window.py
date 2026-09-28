@@ -6,7 +6,7 @@ import json
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QImage
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
+from PySide6.QtWidgets import QHBoxLayout, QFrame, QScrollArea, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
 
 from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH
 from app.features.audio_devices import enumerate_audio_input_devices
@@ -142,20 +142,145 @@ class MainWindow(QMainWindow):
         self.detected_label = self.practice_panel.detected_label
         self.missing_label = self.practice_panel.missing_label
 
-        root = QWidget()
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(10, 10, 10, 10)
-        root_layout.setSpacing(10)
+        # root = QWidget()
+        # root_layout = QHBoxLayout(root)
+        # root_layout.setContentsMargins(10, 10, 10, 10)
+        # root_layout.setSpacing(10)
 
-        video_column = QWidget()
-        video_column_layout = QVBoxLayout(video_column)
-        video_column_layout.setContentsMargins(0, 0, 0, 0)
-        video_column_layout.setSpacing(8)
+        # video_column = QWidget()
+        # video_column_layout = QVBoxLayout(video_column)
+        # video_column_layout.setContentsMargins(0, 0, 0, 0)
+        # video_column_layout.setSpacing(8)
+        # video_column_layout.addWidget(self.video_label, stretch=1)
+        # video_column_layout.addWidget(self.practice_tab_strip)
+        
+        # ── [연습 화면 루트 컨테이너 (미니멀 라이트 테마)] ──
+        root = QWidget()
+        root.setStyleSheet("""
+            QWidget {
+                font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
+                background-color: #f8f9fa;
+                color: #212529;
+            }
+
+            /* 비디오 및 타브 악보 감싸는 메인 카드 */
+            QFrame#video_card {
+                background-color: #ffffff;
+                border: 1px solid #e9ecef;
+                border-radius: 12px;
+            }
+
+            /* 우측 사이드 패널 내부의 그룹박스 스타일 일원화 */
+            QGroupBox {
+                font-size: 13.5px;
+                font-weight: 700;
+                color: #111827;
+                border: 1px solid #e9ecef;
+                border-radius: 10px;
+                margin-top: 10px;
+                padding-top: 18px;
+                background-color: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 8px;
+                left: 12px;
+                background-color: #ffffff;
+            }
+
+            /* 콤보박스 및 입력 위젯 */
+            QComboBox {
+                background-color: #ffffff;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+                color: #212529;
+                min-height: 22px;
+            }
+            QComboBox:hover {
+                border-color: #adb5bd;
+            }
+            QComboBox:focus {
+                border-color: #2563eb;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+
+            /* 슬라이더 */
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #e9ecef;
+                border-radius: 3px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #111827;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #ffffff;
+                border: 2px solid #111827;
+                width: 16px;
+                margin-top: -5px;
+                margin-bottom: -5px;
+                border-radius: 8px;
+            }
+
+            /* 체크박스 */
+            QCheckBox {
+                font-size: 13px;
+                font-weight: 500;
+                color: #374151;
+                spacing: 6px;
+            }
+
+            /* 패널 기본 버튼 (이전, 다음, 처음, 새로고침 등) */
+            QGroupBox QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 600;
+                color: #374151;
+                padding: 7px 12px;
+                min-height: 20px;
+            }
+            QGroupBox QPushButton:hover {
+                background-color: #f8f9fa;
+                border-color: #adb5bd;
+                color: #111827;
+            }
+            QGroupBox QPushButton:pressed {
+                background-color: #e9ecef;
+            }
+            QGroupBox QPushButton:disabled {
+                background-color: #f8f9fa;
+                border-color: #e9ecef;
+                color: #adb5bd;
+            }
+        """)
+
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(20, 20, 20, 20)
+        root_layout.setSpacing(16)
+
+        # 좌측 비디오 + 타브 악보 카드 래퍼
+        video_card = QFrame()
+        video_card.setObjectName("video_card")
+        video_column_layout = QVBoxLayout(video_card)
+        video_column_layout.setContentsMargins(16, 16, 16, 16)
+        video_column_layout.setSpacing(12)
         video_column_layout.addWidget(self.video_label, stretch=1)
         video_column_layout.addWidget(self.practice_tab_strip)
-        
-        root_layout.addWidget(video_column, stretch=1)
+
+        root_layout.addWidget(video_card, stretch=1)
         root_layout.addWidget(self._build_side_panel())
+        
+        # root_layout.addWidget(video_column, stretch=1)
+        # root_layout.addWidget(self._build_side_panel())
 
         # ── [4단 라우팅 스택 조립] ──
         self.stacked_widget = QStackedWidget(self)
@@ -245,37 +370,136 @@ class MainWindow(QMainWindow):
         # 💡 악보 정밀 에디터는 Index 3 입니다!
         self.stacked_widget.setCurrentIndex(3)
 
+    # def _build_side_panel(self) -> QWidget:
+    #     panel = QWidget()
+    #     panel.setFixedWidth(420)
+    #     layout = QVBoxLayout(panel)
+    #     layout.setContentsMargins(0, 0, 0, 0)
+    #     layout.setSpacing(10)
+    #     layout.addWidget(self.camera_panel)
+    #     layout.addWidget(self.tracking_panel)
+    #     layout.addWidget(self.practice_panel)
+        
+    #     # +) UI를 전혀 해치지 않고 맨 밑에 홈 복귀 버튼만 추가 배치
+    #     btn_home = QPushButton("메인 화면으로 이동")
+    #     btn_home.setCursor(Qt.PointingHandCursor)
+    #     btn_home.setFixedHeight(45)
+    #     btn_home.setStyleSheet("""
+    #         QPushButton { 
+    #             background-color: #333333; 
+    #             color: white; 
+    #             font-weight: bold; 
+    #             border-radius: 6px; 
+    #             font-size: 14px; 
+    #             border: none;
+    #         }
+    #         QPushButton:hover { background-color: #555555; }
+    #     """)
+    #     # 복귀 시 오디오 캡처와 카메라 스레드를 완벽히 정지시키고 홈으로 안전 이동
+    #     btn_home.clicked.connect(lambda: (self.stop_practice(), self.stop_video(), self.switch_to_select()))
+    #     layout.addWidget(btn_home)
+
+    #     layout.addStretch(1)
+    #     return panel
     def _build_side_panel(self) -> QWidget:
+        # 스크롤 가능하도록 안전하게 감싸는 컨테이너 생성
+        scroll_area = QScrollArea()
+        scroll_area.setFixedWidth(410)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                background-color: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background-color: transparent;
+                width: 6px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #cbd5e1;
+                border-radius: 3px;
+                min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #94a3b8;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+
         panel = QWidget()
-        panel.setFixedWidth(420)
+        panel.setStyleSheet("background-color: transparent;")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(12)
+
+        # 핵심 패널 3종 배치
         layout.addWidget(self.camera_panel)
         layout.addWidget(self.tracking_panel)
         layout.addWidget(self.practice_panel)
-        
-        # +) UI를 전혀 해치지 않고 맨 밑에 홈 복귀 버튼만 추가 배치
-        btn_home = QPushButton("메인 화면으로 이동")
+
+        # 연습 시작 / 중지 버튼 시각적 위계 부여
+        if hasattr(self, 'start_practice_button'):
+            self.start_practice_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #111827;
+                    color: #ffffff;
+                    border: 1px solid #111827;
+                    border-radius: 6px;
+                    font-weight: 700;
+                    padding: 9px;
+                }
+                QPushButton:hover { background-color: #27272a; }
+                QPushButton:disabled { background-color: #e5e7eb; border-color: #e5e7eb; color: #9ca3af; }
+            """)
+        if hasattr(self, 'stop_practice_button'):
+            self.stop_practice_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    color: #dc2626;
+                    border: 1px solid #fca5a5;
+                    border-radius: 6px;
+                    font-weight: 700;
+                    padding: 9px;
+                }
+                QPushButton:hover { background-color: #fef2f2; border-color: #ef4444; }
+                QPushButton:disabled { background-color: #f8f9fa; border-color: #e5e7eb; color: #adb5bd; }
+            """)
+
+        layout.addSpacing(6)
+
+        # 홈 복귀 버튼 (정돈된 솔리드 다크 톤)
+        btn_home = QPushButton("악보 선택으로 복귀")
         btn_home.setCursor(Qt.PointingHandCursor)
-        btn_home.setFixedHeight(45)
+        btn_home.setFixedHeight(44)
         btn_home.setStyleSheet("""
-            QPushButton { 
-                background-color: #333333; 
-                color: white; 
-                font-weight: bold; 
-                border-radius: 6px; 
-                font-size: 14px; 
-                border: none;
+            QPushButton {
+                background-color: #111827;
+                color: #ffffff;
+                font-size: 13.5px;
+                font-weight: 700;
+                border: 1px solid #111827;
+                border-radius: 8px;
+                padding: 10px;
             }
-            QPushButton:hover { background-color: #555555; }
+            QPushButton:hover {
+                background-color: #27272a;
+                border-color: #27272a;
+            }
+            QPushButton:pressed {
+                background-color: #09090b;
+            }
         """)
-        # 복귀 시 오디오 캡처와 카메라 스레드를 완벽히 정지시키고 홈으로 안전 이동
         btn_home.clicked.connect(lambda: (self.stop_practice(), self.stop_video(), self.switch_to_select()))
         layout.addWidget(btn_home)
 
         layout.addStretch(1)
-        return panel
+        scroll_area.setWidget(panel)
+        return scroll_area
 
     def current_step(self) -> PracticeStep:
         return self.practice_steps[self.current_index]
