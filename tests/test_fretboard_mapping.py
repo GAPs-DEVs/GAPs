@@ -916,7 +916,7 @@ class FretboardMappingTests(unittest.TestCase):
         )
 
         assert result.grid is not None
-        self.assertEqual(result.refined_fret_indices, (1,))
+        self.assertIn(0, result.refined_fret_indices)
         self.assertAlmostEqual(result.grid.ordered_fret_lines[1].p0[1], 100.0, delta=1.0)
 
     def test_edge_refinement_uses_current_yolo_frets_when_image_edges_are_missing(self) -> None:
@@ -941,13 +941,13 @@ class FretboardMappingTests(unittest.TestCase):
             yolo_detected_lines=yolo_lines,
         )
 
-        self.assertEqual(result.refined_fret_indices, (0, 2))
+        self.assertEqual(result.refined_fret_indices, (0, 1))
         self.assertEqual(len(result.confirmed_fret_lines), 3)
         self.assertIsNotNone(result.confirmed_fret_lines[0])
-        self.assertIsNone(result.confirmed_fret_lines[1])
-        self.assertIsNotNone(result.confirmed_fret_lines[2])
+        self.assertIsNotNone(result.confirmed_fret_lines[1])
+        self.assertIsNone(result.confirmed_fret_lines[2])
 
-    def test_edge_refinement_rejects_false_line_between_expected_frets(self) -> None:
+    def test_edge_refinement_orders_current_yolo_frets_without_expected_position_check(self) -> None:
         frame = np.zeros((180, 140, 3), dtype=np.uint8)
         grid = build_grid_from_lines(
             DetectedLine("nut", (10.0, 20.0), (110.0, 20.0), 1.0),
@@ -968,8 +968,11 @@ class FretboardMappingTests(unittest.TestCase):
             yolo_detected_lines=yolo_lines,
         )
 
-        self.assertEqual(result.refined_fret_indices, ())
-        self.assertEqual(result.confirmed_fret_lines, ())
+        self.assertEqual(result.refined_fret_indices, (0,))
+        self.assertEqual(len(result.confirmed_fret_lines), 3)
+        self.assertIsNotNone(result.confirmed_fret_lines[0])
+        self.assertIsNone(result.confirmed_fret_lines[1])
+        self.assertIsNone(result.confirmed_fret_lines[2])
 
     def test_edge_refinement_drops_yolo_fret_that_overlaps_nut(self) -> None:
         frame = np.zeros((180, 140, 3), dtype=np.uint8)

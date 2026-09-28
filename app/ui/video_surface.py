@@ -62,23 +62,17 @@ class VideoSurface(QLabel):
         selection_stage: str = "idle",
         selected_nut_line: DetectedLine | None = None,
         selected_reference_line: DetectedLine | None = None,
-        selection_points: tuple[tuple[float, float], ...] = (),
-        manual_points: bool = False,
-        reference_fret_index: int | None = None,
     ) -> None:
         if self.current_image is None:
             return
 
         image = self.current_image
-        if selection_stage in {"select_nut", "select_middle", "select_fret"}:
+        if selection_stage in {"select_nut", "select_fret"}:
             image = self._decorate_selection_frame(
                 image,
                 selection_stage,
                 selected_nut_line,
                 selected_reference_line,
-                selection_points,
-                manual_points,
-                reference_fret_index,
             )
 
         pixmap = QPixmap.fromImage(image)
@@ -95,9 +89,6 @@ class VideoSurface(QLabel):
         selection_stage: str,
         selected_nut_line: DetectedLine | None,
         selected_reference_line: DetectedLine | None,
-        selection_points: tuple[tuple[float, float], ...],
-        manual_points: bool,
-        reference_fret_index: int | None,
     ) -> QImage:
         preview = image.copy()
         painter = QPainter(preview)
@@ -121,15 +112,9 @@ class VideoSurface(QLabel):
                 int(round(selected_reference_line.p1[1])),
             )
 
-        painter.setPen(QPen(QColor(255, 210, 60), 3))
-        for x, y in selection_points:
-            painter.drawEllipse(int(x) - 5, int(y) - 5, 10, 10)
         instruction = "너트 선을 클릭하세요"
-        if selection_stage in {"select_middle", "select_fret"}:
-            instruction = f"실제 {reference_fret_index}프렛의 금속선을 클릭하세요"
-        if manual_points:
-            name = "너트" if selection_stage == "select_nut" else f"실제 {reference_fret_index}프렛"
-            instruction = f"{name}의 양 끝점을 클릭하세요 ({len(selection_points) % 2 + 1}/2)"
+        if selection_stage == "select_fret":
+            instruction = "가장 멀리 보이는 프렛 선을 클릭하세요"
         painter.setPen(QPen(QColor(255, 255, 255), 2))
         painter.drawText(24, 36, instruction)
         painter.end()

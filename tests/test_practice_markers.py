@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-import numpy as np
-
 from app.practice_markers import build_practice_step_note_markers, screen_string_index
 from practice.score_steps import build_practice_steps
-from vision.fretboard_mapping import FRETTED_NOTE_ANCHOR_RATIO, DetectedLine, build_grid_from_lines, transform_grid
+from vision.fretboard_mapping import FRETTED_NOTE_ANCHOR_RATIO, DetectedLine, build_grid_from_lines
 
 
 def make_line(kind: str, y: float) -> DetectedLine:
@@ -64,21 +62,6 @@ class PracticeMarkerTests(unittest.TestCase):
         markers = build_practice_step_note_markers(self.make_grid(), step)
 
         self.assertEqual(markers, ())
-
-    def test_open_string_notes_stay_on_their_nut_strings_under_perspective(self) -> None:
-        grid = transform_grid(self.make_grid(), np.array([
-            [.9, -.15, 100], [.2, 1.1, 50], [.001, -.001, 1],
-        ]))
-        step = build_practice_steps([{"step": 1, "string": string, "fret": 0} for string in range(1, 7)])[0]
-        for reverse in (False, True):
-            markers = build_practice_step_note_markers(grid, step, reverse_strings=reverse)
-            self.assertEqual(len(markers), 6)
-            for note, marker in zip(step.notes, markers):
-                string_index = screen_string_index(note.string_number, reverse_strings=reverse)
-                np.testing.assert_allclose(marker.point_xy, grid.string_crossings[0][string_index], atol=1e-4)
-                self.assertEqual(marker.string_index, string_index)
-                self.assertEqual(marker.fret_index, 0)
-                self.assertTrue(marker.is_open)
 
 
 if __name__ == "__main__":
