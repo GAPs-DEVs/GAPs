@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -16,10 +17,30 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
 )
-from PySide6.QtCore import Qt, QRect, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush
+from PySide6.QtCore import Qt, QRect, Signal, QPointF
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPixmap, QPolygonF
 
 from app.ui.tab_sheet_view import TabSheetView
+
+
+def make_arrow_png(direction: str, color="#374151", size=12) -> str:
+    """스핀박스용 위/아래 화살표 PNG를 임시 폴더에 만들고 경로(슬래시 형식)를 반환"""
+    path = os.path.join(tempfile.gettempdir(), f"spin_arrow_{direction}_{color.strip('#')}_{size}.png")
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    m = 2  # 여백
+    if direction == "up":
+        pts = [QPointF(size / 2, m), QPointF(size - m, size - m - 1), QPointF(m, size - m - 1)]
+    else:
+        pts = [QPointF(m, m + 1), QPointF(size - m, m + 1), QPointF(size / 2, size - m)]
+    p.drawPolygon(QPolygonF(pts))
+    p.end()
+    pix.save(path, "PNG")
+    return path.replace("\\", "/")  # QSS url()은 반드시 슬래시
 
 
 class FretboardMonitor(QWidget):
@@ -164,6 +185,10 @@ class AdminPage(QWidget):
         self.init_ui()
 
     def init_ui(self):
+        # 스핀박스 화살표 이미지 생성 (QSS의 UP_ARROW / DOWN_ARROW 자리에 경로가 들어감)
+        up_arrow = make_arrow_png("up")
+        down_arrow = make_arrow_png("down")
+
         # ── [LoginPage / SelectPage와 통일된 미니멀 라이트 테마 QSS] ──
         self.setStyleSheet("""
             QWidget {
@@ -216,13 +241,46 @@ class AdminPage(QWidget):
                 background-color: #ffffff;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
-                padding: 6px 10px;
+                padding: 6px 30px 6px 10px;
                 font-size: 13px;
                 color: #212529;
                 min-width: 50px;
             }
             QSpinBox:focus {
                 border: 1px solid #2563eb;
+            }
+            QSpinBox::up-button {
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                width: 24px;
+                border-left: 1px solid #e9ecef;
+                border-top-right-radius: 6px;
+                background-color: #f8f9fa;
+            }
+            QSpinBox::down-button {
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                width: 24px;
+                border-left: 1px solid #e9ecef;
+                border-top: 1px solid #e9ecef;
+                border-bottom-right-radius: 6px;
+                background-color: #f8f9fa;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background-color: #e9ecef;
+            }
+            QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
+                background-color: #dee2e6;
+            }
+            QSpinBox::up-arrow {
+                image: url(UP_ARROW);
+                width: 12px;
+                height: 12px;
+            }
+            QSpinBox::down-arrow {
+                image: url(DOWN_ARROW);
+                width: 12px;
+                height: 12px;
             }
 
             /* 그룹 박스 */
@@ -298,7 +356,7 @@ class AdminPage(QWidget):
                 background-color: #f8f9fa;
                 border-color: #adb5bd;
             }
-        """)
+        """.replace("UP_ARROW", up_arrow).replace("DOWN_ARROW", down_arrow))
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(24, 24, 24, 24)
