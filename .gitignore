@@ -6,6 +6,9 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-auth-test/
+# Google desktop OAuth downloads must stay out of Git.
+client_secret_*.json
 venv/
 env/
 ENV/

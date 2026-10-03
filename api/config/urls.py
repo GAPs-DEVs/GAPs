@@ -3,6 +3,7 @@ from django.db import DatabaseError, connection
 from django.http import JsonResponse
 from django.urls import path
 from django.views.decorators.http import require_GET
+from .auth import google_login, current_user
 
 
 @require_GET
@@ -26,3 +27,7 @@ def database_health(request):
 
 
 urlpatterns = [path("health/", health), path("health/db/", database_health)]
+urlpatterns += [
+    path("api/auth/google", google_login),
+    path("api/auth/me", current_user),
+]

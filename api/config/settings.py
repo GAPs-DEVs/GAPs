@@ -38,3 +38,9 @@ DATABASES = {
 }
 USE_TZ = True
 TIME_ZONE = "Asia/Seoul"
+
+# Empty configuration disables Google login while leaving health checks available.
+GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+SERVICE_TOKEN_TTL = 3600
+# Bound JSON request size before authentication or database access.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 65536
