@@ -4,7 +4,7 @@ from django.http import JsonResponse
 from django.urls import path
 from django.views.decorators.http import require_GET
 from .auth import google_login, current_user
-from .scores import upload_score
+from .scores import upload_score, sync_scores, score_version
 
 
 @require_GET
@@ -29,6 +29,8 @@ def database_health(request):
 
 urlpatterns = [path("health/", health), path("health/db/", database_health)]
 urlpatterns += [
+    path("api/scores/sync", sync_scores),
+    path("api/scores/<uuid:score_id>/versions/<uuid:version_id>", score_version),
     path("api/scores", upload_score),
     path("api/auth/google", google_login),
     path("api/auth/me", current_user),
