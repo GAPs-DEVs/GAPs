@@ -1,0 +1,661 @@
+{
+  "info": {
+    "name": "Guitar Practice API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Run in order after deploying the API. Successful upload creates a private score each time. No automatic cleanup or retries. SSL verification must remain enabled."
+  },
+  "item": [
+    {
+      "name": "01 Health",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [],
+        "url": "{{base_url}}/health/"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"Healthy\", () => pm.expect(pm.response.json().status).to.eql(\"ok\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 DB health",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [],
+        "url": "{{base_url}}/health/db/"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"DB available\", () => pm.expect(pm.response.json().status).to.eql(\"ok\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Google login → save service token",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/auth/google",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id_token\": \"{{google_id_token}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Clear old results so a failed login cannot reuse an earlier session.",
+              "pm.environment.unset(\"access_token\");",
+              "pm.environment.unset(\"user_id\");",
+              "if (!pm.environment.get(\"google_id_token\")) { throw new Error(\"Run the local token helper and import its environment first.\"); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "if (pm.response.code === 200) {",
+              "  const data = pm.response.json();",
+              "  pm.test(\"Service token and user\", () => { pm.expect(data.access_token).to.be.a(\"string\").and.not.empty; pm.expect(data.user.id).to.be.a(\"string\"); });",
+              "  if (data.access_token && data.user && data.user.id) {",
+              "    pm.environment.set(\"access_token\", data.access_token);",
+              "    pm.environment.set(\"user_id\", data.user.id);",
+              "    pm.environment.unset(\"google_id_token\");",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Authenticated user",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{base_url}}/api/auth/me"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "pm.test(\"Same user\", () => pm.expect(pm.response.json().user.id).to.eql(pm.environment.get(\"user_id\")));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Upload private score (creates one DB record)",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/scores",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Postman upload {{$timestamp}}\",\n  \"source_type\": \"import\",\n  \"notes\": [\n    {\n      \"step\": 1,\n      \"string\": 1,\n      \"fret\": 0,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 64\n    },\n    {\n      \"step\": 1,\n      \"string\": 2,\n      \"fret\": 1,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 60\n    },\n    {\n      \"step\": 2,\n      \"string\": 1,\n      \"fret\": 3,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 67\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.unset(\"score_id\");",
+              "pm.environment.unset(\"version_id\");",
+              "if (!pm.environment.get(\"access_token\")) { throw new Error(\"Send Google login first.\"); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+              "if (pm.response.code === 201) {",
+              "  const score = pm.response.json().score;",
+              "  pm.test(\"Private version 1, 3 notes, 2 steps\", () => {",
+              "    pm.expect(score.visibility).to.eql(\"private\"); pm.expect(score.version_number).to.eql(1);",
+              "    pm.expect(score.note_count).to.eql(3); pm.expect(score.step_count).to.eql(2);",
+              "    pm.expect(score.id).to.match(/^[0-9a-f-]{36}$/);",
+              "  });",
+              "  pm.environment.set(\"score_id\", score.id);",
+              "  pm.environment.set(\"version_id\", score.version_id);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Upload without token",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/scores",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Postman upload {{$timestamp}}\",\n  \"source_type\": \"import\",\n  \"notes\": [\n    {\n      \"step\": 1,\n      \"string\": 1,\n      \"fret\": 0,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 64\n    },\n    {\n      \"step\": 1,\n      \"string\": 2,\n      \"fret\": 1,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 60\n    },\n    {\n      \"step\": 2,\n      \"string\": 1,\n      \"fret\": 3,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 67\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));",
+              "pm.test(\"Expected error\", () => pm.expect(pm.response.json().error).to.eql(\"authentication_required\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 Reject invalid fret",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/scores",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Postman upload {{$timestamp}}\",\n  \"source_type\": \"import\",\n  \"notes\": [\n    {\n      \"step\": 1,\n      \"string\": 1,\n      \"fret\": 31,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 64\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
+              "pm.test(\"Expected error\", () => pm.expect(pm.response.json().error).to.eql(\"invalid_score\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 Reject owner override",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/scores",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Postman upload {{$timestamp}}\",\n  \"source_type\": \"import\",\n  \"notes\": [\n    {\n      \"step\": 1,\n      \"string\": 1,\n      \"fret\": 0,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 64\n    },\n    {\n      \"step\": 1,\n      \"string\": 2,\n      \"fret\": 1,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 60\n    },\n    {\n      \"step\": 2,\n      \"string\": 1,\n      \"fret\": 3,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 67\n    }\n  ],\n  \"owner_user_id\": \"00000000-0000-0000-0000-000000000000\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
+              "pm.test(\"Expected error\", () => pm.expect(pm.response.json().error).to.eql(\"invalid_score\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 Reject duplicate string",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/scores",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Postman upload {{$timestamp}}\",\n  \"source_type\": \"import\",\n  \"notes\": [\n    {\n      \"step\": 1,\n      \"string\": 1,\n      \"fret\": 0,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 64\n    },\n    {\n      \"step\": 1,\n      \"string\": 1,\n      \"fret\": 0,\n      \"duration_ms\": 500,\n      \"midi_pitch\": 64\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));",
+              "pm.test(\"Expected error\", () => pm.expect(pm.response.json().error).to.eql(\"invalid_score\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 Reject invalid Google token",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/auth/google",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id_token\": \"invalid\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));",
+              "pm.test(\"Expected error\", () => pm.expect(pm.response.json().error).to.eql(\"invalid_google_token\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 Sync library (first page)",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{base_url}}/api/scores/sync?limit=1"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.unset(\"sync_score_id\");",
+              "pm.environment.unset(\"sync_version_id\");",
+              "pm.environment.unset(\"next_cursor_encoded\");"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "if (pm.response.code === 200) {",
+              " const data = pm.response.json();",
+              " pm.test(\"Library page\", () => { pm.expect(data.items).to.be.an(\"array\"); pm.expect(data.items.length).to.be.at.most(1); });",
+              " pm.environment.set(\"next_cursor_encoded\", data.next_cursor ? encodeURIComponent(data.next_cursor) : \"\");",
+              " const score = data.items.find(item => item.selected_version_id);",
+              " if (score) { pm.environment.set(\"sync_score_id\", score.score_id); pm.environment.set(\"sync_version_id\", score.selected_version_id); }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "12 Selected version content",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{base_url}}/api/scores/{{sync_score_id}}/versions/{{sync_version_id}}"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (!pm.environment.get(\"sync_score_id\") || !pm.environment.get(\"sync_version_id\")) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "if (pm.response.code === 200) {",
+              " const data = pm.response.json();",
+              " pm.test(\"Selected IDs\", () => { pm.expect(data.score_id).to.eql(pm.environment.get(\"sync_score_id\")); pm.expect(data.version_id).to.eql(pm.environment.get(\"sync_version_id\")); });",
+              " pm.test(\"Notes and ordering\", () => {",
+              "  pm.expect(data.notes).to.be.an(\"array\");",
+              "  data.notes.forEach((n, i) => {",
+              "   pm.expect(n.score_step_id).to.be.a(\"string\");",
+              "   if (i) { const prev = data.notes[i - 1]; pm.expect(n.step > prev.step || (n.step === prev.step && n.string > prev.string)).to.eql(true); }",
+              "  });",
+              " });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "13 Missing version",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{base_url}}/api/scores/{{score_id}}/versions/00000000-0000-0000-0000-000000000000"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 404\", () => pm.response.to.have.status(404));",
+              "pm.test(\"Not found\", () => pm.expect(pm.response.json().error).to.eql(\"score_version_not_found\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "14 Sync without token",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [],
+        "url": "{{base_url}}/api/scores/sync"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "15 Invalid page size",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{base_url}}/api/scores/sync?limit=101"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "16 Invalid cursor",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{base_url}}/api/scores/sync?cursor=tampered"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "17 Sync next page (skip if last page)",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{base_url}}/api/scores/sync?limit=1&cursor={{next_cursor_encoded}}"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (!pm.environment.get(\"next_cursor_encoded\")) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+              "if (pm.response.code === 200) {",
+              " const data = pm.response.json();",
+              " pm.test(\"Different next page\", () => data.items.forEach(s => pm.expect(s.score_id).not.to.eql(pm.environment.get(\"sync_score_id\"))));",
+              " pm.environment.set(\"next_cursor_encoded\", data.next_cursor ? encodeURIComponent(data.next_cursor) : \"\");",
+              "}"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
