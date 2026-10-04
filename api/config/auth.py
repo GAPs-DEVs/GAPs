@@ -95,8 +95,7 @@ def google_login(request):
                      "expires_in": settings.SERVICE_TOKEN_TTL, "user": user})
 
 
-@require_GET
-def current_user(request):
+def authenticate_user(request):
     # A small authenticated endpoint verifies the complete login round trip.
     # Check current DB status on every request so suspended users are denied.
     header = request.headers.get("Authorization", "")
@@ -117,4 +116,10 @@ def current_user(request):
         return response({"error": "database_unavailable"}, 503)
     if row is None:
         return response({"error": "account_disabled"}, 403)
-    return response({"user": {"id": str(row[0]), "username": row[1], "role": row[2]}})
+    return {"id": str(row[0]), "username": row[1], "role": row[2]}
+
+
+@require_GET
+def current_user(request):
+    user = authenticate_user(request)
+    return user if isinstance(user, JsonResponse) else response({"user": user})
