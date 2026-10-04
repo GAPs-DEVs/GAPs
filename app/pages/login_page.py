@@ -1,7 +1,6 @@
 import hashlib
 import json
 import os
-import threading
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,12 +23,10 @@ def hash_password(password: str) -> str:
 class LoginPage(QWidget):
     # 로그인 성공 시 유저 정보(dict)를 메인 윈도우로 쏘아 올리는 시그널
     login_success = Signal(dict)
-    google_finished = Signal(object, str)
 
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.google_finished.connect(self._on_google_finished)
 
         # 로컬 유저 DB 파일 경로
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -330,8 +327,6 @@ class LoginPage(QWidget):
                 return
 
             # 로그인 성공 -> SelectPage로 전환
-            self.main_window.api_session = None
-            self.main_window.current_user = None
             self.login_success.emit(user)
             if hasattr(self.main_window, "switch_to_select"):
                 self.main_window.switch_to_select()
@@ -339,40 +334,9 @@ class LoginPage(QWidget):
                 self.main_window.stacked_widget.setCurrentIndex(1)
 
     def handle_google_login(self):
-        """브라우저 인증과 서버 요청은 작업 스레드에서 실행해 UI를 유지합니다."""
-        self.setEnabled(False)
-        # Clear a previous session before starting another login attempt.
-        self.main_window.api_session = None
-        self.main_window.current_user = None
-        threading.Thread(target=self._google_worker, daemon=True).start()
-
-    def _google_worker(self):
-        result, error = None, ""
-        safe_error = ()
-        try:
-            # Delay imports so guest/local mode still works without OAuth packages.
-            from app.google_login import LoginError, login_with_google
-            safe_error = LoginError
-            result = login_with_google()
-        except safe_error as exc:
-            error = str(exc)
-        except Exception:
-            # OAuth exceptions may contain token/authorization URLs: do not display them.
-            error = "Google 로그인이 취소되었거나 연결에 실패했습니다. 설정을 확인하고 다시 시도해주세요."
-        try:
-            self.google_finished.emit(result, error)
-        except RuntimeError:
-            pass  # The application may have closed while the browser was open.
-
-    def _on_google_finished(self, result, error):
-        self.setEnabled(True)
-        if error:
-            QMessageBox.warning(self, "Google 로그인 실패", error)
-            return
-        # Service token lives only in memory; app restart/expiry requires login again.
-        self.main_window.api_session = result
-        self.main_window.current_user = result["user"]
-        self.login_success.emit(result["user"])
+        """간편 Google 로그인 Mock 연동"""
+        guest_user = {"username": "Google 유저", "email": "google_user@gmail.com"}
+        self.login_success.emit(guest_user)
         if hasattr(self.main_window, "switch_to_select"):
             self.main_window.switch_to_select()
         else:
@@ -380,8 +344,6 @@ class LoginPage(QWidget):
 
     def handle_guest_login(self):
         """비로그인 게스트 바로 시작"""
-        self.main_window.api_session = None
-        self.main_window.current_user = None
         guest_user = {"username": "게스트", "email": "guest@local"}
         self.login_success.emit(guest_user)
         if hasattr(self.main_window, "switch_to_select"):
