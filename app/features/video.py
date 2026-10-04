@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 
 import cv2
 from PySide6.QtCore import QThread, Signal
@@ -256,6 +256,7 @@ class PracticeVideoWorker(QThread):
                 continue
 
             ok, frame_bgr = capture.read()
+            frame_timestamp = monotonic()
             if not ok:
                 self.error_message.emit("Failed to read frame from webcam.")
                 break
@@ -285,7 +286,9 @@ class PracticeVideoWorker(QThread):
                         image_size=self.image_size,
                         roi=roi,
                     )
-                tracking_frame = self.hybrid_tracker.update(frame_bgr, detect, self.latest_exclusion_mask)
+                tracking_frame = self.hybrid_tracker.update(
+                    frame_bgr, detect, self.latest_exclusion_mask, timestamp=frame_timestamp,
+                )
                 annotated, analysis = self._analyze_selected_lines_frame(frame_bgr, tracking_frame)
             else:
                 annotated, analysis = self._analyze_yolo_assist_frame(model, frame_bgr)
