@@ -17,7 +17,7 @@
 
 ### 주소와 공통 규칙
 
-- 서버 주소: `https://<현재 EC2 공인 IPv4>`. API 담당자가 전달한 최신 주소를 클라이언트 설정값 `API_BASE_URL`로 관리합니다. IP를 코드에 고정하지 않습니다.
+- 현재 서버 주소: `https://54.117.40.85` (탄력적 IP). 클라이언트 설정값 `API_BASE_URL`로 관리하며 IP를 코드에 고정하지 않습니다.
 - `/health/`, `/health/db/`만 끝에 `/`가 있습니다. `/api/...` 경로에는 끝에 `/`를 붙이지 않습니다.
 - POST 본문은 JSON이며 `Content-Type: application/json`을 지정합니다.
 - 인증 요청에는 `Authorization: Bearer <서비스 access_token>`을 보냅니다. Google ID 토큰은 로그인 요청에만 사용합니다.
@@ -37,8 +37,8 @@
 
 ### EC2 공인 IP가 변경된 경우
 
-현재 서버는 탄력적 IP를 사용하지 않습니다. 자동 할당된 공인 IPv4는 **중지 후 시작(Stop/Start)** 시 변경됩니다.
-일반 **재부팅(Reboot)** 시에는 유지됩니다. [AWS 인스턴스 상태 안내](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-lifecycle.html)
+현재 서버는 탄력적 IP `54.117.40.85`를 사용합니다. 할당·연결을 유지하면 중지 후 시작해도 같은 주소를 사용합니다.
+아래 절차는 탄력적 IP 자체를 교체할 때 적용합니다. [AWS 인스턴스 상태 안내](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-lifecycle.html)
 
 서버 담당자는 AWS 콘솔에서 현재 공인 IPv4를 확인하고 다음을 반영합니다.
 

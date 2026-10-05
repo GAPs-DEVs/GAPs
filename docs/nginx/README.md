@@ -1,5 +1,45 @@
 # Nginx · Certbot Docker 구성
 
+## 현재 운영 구성
+
+- 서버 주소: `https://54.117.40.85` (탄력적 IP)
+- 서버 `nginx/.env`: `NGINX_CONFIG=https.conf`
+- 인증서 이름: `backend`. EIP를 사용해도 인증서 자동 갱신은 계속 필요합니다.
+- 내부 API 주소: `api:8000`. 공인 IP로 바꾸지 않습니다.
+
+이미 HTTPS가 정상인 서버는 아래 **운영 점검**을 사용합니다.
+뒤의 1~5단계는 최초 구축용이며 일반 pull·재시작 때 반복하지 않습니다.
+
+## 운영 점검 및 EC2 재시작 후 확인
+
+```bash
+cd ~/Guitar_Practice_Support_SW/nginx
+# 컨테이너 상태와 현재 적용 설정을 검사합니다.
+sudo docker compose ps
+sudo docker compose exec -T nginx nginx -t
+# 중지 중에는 갱신 cron이 실행되지 않으므로 시작 후 갱신 필요 여부를 확인합니다.
+sudo bash renew.sh
+curl -f https://54.117.40.85/health/
+curl -f https://54.117.40.85/health/db/
+```
+
+컨테이너가 실행되지 않았다면 DB → API → Nginx 순으로 각 디렉터리에서
+`sudo docker compose up -d`를 실행합니다. Docker 서비스가 실행 중이어야 합니다.
+인증서 갱신 실패 시 `sudo docker compose logs --tail 50 nginx`와 갱신 로그를 확인합니다.
+
+```bash
+# 호스트 Nginx는 disabled, 갱신 cron은 기존 일정 한 개가 등록되어 있어야 합니다.
+systemctl is-enabled nginx
+sudo crontab -l
+# 운영 인증서를 교체하지 않고 갱신 절차를 시험합니다.
+sudo docker compose --profile tools run --rm certbot renew --cert-name backend --dry-run
+```
+
+실제 `.env`와 인증서 볼륨은 유지하며, `docker compose down -v`는 실행하지 않습니다.
+EIP를 교체할 때만 API 허용 주소·클라이언트 주소·인증서 대상을 함께 변경합니다.
+
+## 최초 구축 안내
+
 기존 API·DB가 같은 EC2에서 실행 중인 상태에서 적용합니다.
 API Compose의 `guitar-practice-db_default` 네트워크와 `api:8000`을 사용합니다.
 이 폴더만으로 API·DB를 생성하지는 않습니다. 아래 명령은 각 단계가 성공하면
