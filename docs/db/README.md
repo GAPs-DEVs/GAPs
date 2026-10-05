@@ -188,4 +188,4 @@ psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f db/grant_api_role.sql.example
 - 악보 공유와 개인 악보함: `score_members`, `user_score_library`
 - 연습: `user_instruments`, `practice_sessions`, `practice_step_results`, `user_score_progress`
 
-테이블 관계와 현재 JSON 악보의 필드 매핑은 [ERD 문서](../database-erd.md)를 참고합니다.
+테이블 관계와 현재 JSON 악보의 필드 매핑은 [ERD 문서](database-erd.md)를 참고합니다.
