@@ -156,6 +156,8 @@ uv run pytest tests/test_practice_markers.py tests/test_score_steps.py tests/tes
 
 ## 개발 참고
 
+- DB·API·HTTPS 설정과 테스트는 [서버 문서 목록](docs/README.md)을 참고하세요.
+
 - 메인 앱 개발 규칙은 `app/DEVELOPMENT_GUIDE.md`를 따릅니다.
 - 사용자 앱의 실행 진입점은 `app/main.py`입니다.
 - 개발용 지판 검출 뷰어는 `tools/fretboard_detection_viewer.py`에 남아 있습니다.
