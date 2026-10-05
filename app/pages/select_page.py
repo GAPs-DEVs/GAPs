@@ -6,16 +6,17 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QLabel,
-    QListWidget,
     QFileDialog,
     QMessageBox,
-    QGroupBox,
     QProgressDialog,
     QApplication,
     QFrame,
+    QScrollArea,
+    QGridLayout,
+    QLineEdit,
 )
 from PySide6.QtCore import Qt, QThread, Signal
-import guitarpro  # PyGuitarPro 라이브러리
+import guitarpro
 
 MEASURES_PER_SCORE_LINE = 4
 STEPS_PER_FALLBACK_SCORE_LINE = 16
@@ -51,15 +52,12 @@ class ParsingThread(QThread):
 
         if self.mode == "GP":
             try:
-                # ── 기타프로 정밀 시퀀스 분석 엔진 가동 ──
                 song = guitarpro.parse(self.file_path)
                 guitar_track = _select_guitar_track(song)
                 measures = list(guitar_track.measures)
                 has_explicit_score_lines = any(_measure_has_line_break(measure) for measure in measures)
 
-                # [BPM 추출] 곡의 마스터 템포 정보 확보 (없으면 기본값 120)
                 bpm = song.tempo if song.tempo > 0 else 120
-
                 parsed_data = []
                 step_counter = 1
                 score_line = 1
@@ -75,10 +73,8 @@ class ParsingThread(QThread):
                         if not beat.notes:
                             continue
 
-                        # [밀리초 박자 연산] 개별 음표 절대 유지 시간(ms) 계산
                         duration_ms = int((60000 / bpm) * (4.0 / beat.duration.value))
 
-                        # [버전 에러 정밀 방어] PyGuitarPro 버전에 따른 isTriplet 속성 부재 오류 우회
                         is_triplet_rhythm = False
                         try:
                             if hasattr(beat.duration, "isTriplet"):
@@ -88,7 +84,6 @@ class ParsingThread(QThread):
                         except Exception:
                             pass
 
-                        # 3연음인 경우 2/3 배율 시간 압축 보정 반영
                         if is_triplet_rhythm:
                             duration_ms = int(duration_ms * (2.0 / 3.0))
 
@@ -152,6 +147,111 @@ class ParsingThread(QThread):
                 self.parsing_finished.emit(False, f"분석 오류: {e}")
 
 
+class ScoreCard(QFrame):
+    """중앙 갤러리에 들어갈 개별 곡 카드"""
+    def __init__(self, song_title, file_path, on_practice_cb, on_edit_cb):
+        super().__init__()
+        self.song_title = song_title
+        self.file_path = file_path
+        self.on_practice_cb = on_practice_cb
+        self.on_edit_cb = on_edit_cb
+        self.init_ui()
+
+    def init_ui(self):
+        self.setObjectName("score_card")
+        self.setFixedHeight(175)
+        self.setStyleSheet("""
+            QFrame#score_card {
+                background-color: #ffffff;
+                border: 1px solid #e9ecef;
+                border-radius: 12px;
+            }
+            QFrame#score_card:hover {
+                border: 1.5px solid #111827;
+                background-color: #ffffff;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 16)
+        layout.setSpacing(8)
+
+        # 상단 태그 및 메타데이터
+        top_box = QHBoxLayout()
+        badge = QLabel("STANDARD TAB")
+        badge.setStyleSheet("""
+            background-color: #f1f5f9;
+            color: #475569;
+            font-size: 10px;
+            font-weight: 800;
+            padding: 3px 7px;
+            border-radius: 4px;
+        """)
+        top_box.addWidget(badge)
+        top_box.addStretch(1)
+
+        note_count = 0
+        try:
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                note_count = len(data)
+        except Exception:
+            pass
+
+        lbl_meta = QLabel(f"{note_count} Notes")
+        lbl_meta.setStyleSheet("font-size: 11px; color: #94a3b8; font-weight: 600;")
+        top_box.addWidget(lbl_meta)
+        layout.addLayout(top_box)
+
+        # 곡 제목
+        title_label = QLabel(self.song_title.upper())
+        title_label.setWordWrap(True)
+        title_label.setStyleSheet("font-size: 16px; font-weight: 800; color: #111827; letter-spacing: -0.3px;")
+        layout.addWidget(title_label)
+
+        layout.addStretch(1)
+
+        # 하단 액션 버튼 그룹
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
+
+        btn_practice = QPushButton("연습 시작")
+        btn_practice.setCursor(Qt.PointingHandCursor)
+        btn_practice.setStyleSheet("""
+            QPushButton {
+                background-color: #111827;
+                color: #ffffff;
+                border: 1px solid #111827;
+                border-radius: 6px;
+                font-size: 12.5px;
+                font-weight: 700;
+                padding: 8px 12px;
+            }
+            QPushButton:hover { background-color: #27272a; }
+        """)
+        btn_practice.clicked.connect(lambda: self.on_practice_cb(self.file_path))
+        btn_layout.addWidget(btn_practice, stretch=2)
+
+        btn_edit = QPushButton("에디터")
+        btn_edit.setCursor(Qt.PointingHandCursor)
+        btn_edit.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #4b5563;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 8px 10px;
+            }
+            QPushButton:hover { background-color: #f8f9fa; color: #111827; }
+        """)
+        btn_edit.clicked.connect(lambda: self.on_edit_cb(self.file_path))
+        btn_layout.addWidget(btn_edit, stretch=1)
+
+        layout.addLayout(btn_layout)
+
+
 class SelectPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -162,237 +262,259 @@ class SelectPage(QWidget):
         self.refresh_song_list()
 
     def init_ui(self):
-        # ── [LoginPage와 100% 동일한 미니멀 라이트 테마 QSS] ──
+        # ── [전체 미니멀 라이트 테마 QSS] ──
         self.setStyleSheet("""
             QWidget {
-                font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
+                font-family: 'Apple SD Gothic Neo', 'Pretendard', 'Malgun Gothic', 'Segoe UI', sans-serif;
                 background-color: #f8f9fa;
                 color: #212529;
             }
 
-            QLabel {
-                background-color: transparent;
-                color: #212529;
-            }
-
-            /* 좌/우측 분할 카드 컨테이너 */
             QFrame#card_panel {
                 background-color: #ffffff;
                 border: 1px solid #e9ecef;
                 border-radius: 12px;
             }
 
-            /* 악보 리스트 위젯 */
-            QListWidget {
-                font-size: 13.5px;
-                border: 1px solid #e9ecef;
-                border-radius: 8px;
-                background-color: #ffffff;
-                color: #212529;
-                outline: none;
-                padding: 4px;
-            }
-            QListWidget::item {
-                padding: 13px 16px;
-                border-bottom: 1px solid #f1f3f5;
-                border-radius: 6px;
-                margin-bottom: 2px;
-            }
-            QListWidget::item:hover {
-                background-color: #f8f9fa;
-            }
-            QListWidget::item:selected {
-                background-color: #f1f5f9;
-                color: #111827;
-                font-weight: 600;
-                border-left: 3px solid #2563eb;
-            }
-
-            /* 그룹 박스 (서피스 카드 스타일로 정돈) */
-            QGroupBox {
-                font-size: 13px;
-                font-weight: 700;
-                color: #374151;
-                border: 1px solid #e9ecef;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 18px;
-                background-color: #ffffff;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                padding: 0 8px;
-                left: 12px;
-                background-color: #ffffff;
-            }
-
-            /* 기본 보조 버튼 (업로드, 에디터) */
-            QPushButton {
+            QLineEdit {
                 background-color: #ffffff;
                 border: 1px solid #ced4da;
-                border-radius: 6px;
+                border-radius: 20px;
+                padding: 8px 16px;
                 font-size: 13px;
-                font-weight: 500;
-                color: #374151;
-                padding: 10px 14px;
-                min-height: 18px;
+                color: #111827;
+                min-height: 20px;
             }
-            QPushButton:hover {
-                background-color: #f8f9fa;
-                border-color: #adb5bd;
-            }
-            QPushButton:pressed {
-                background-color: #e9ecef;
-            }
-            QPushButton:disabled {
-                background-color: #f8f9fa;
-                border-color: #e9ecef;
-                color: #adb5bd;
+            QLineEdit:focus {
+                border: 1.5px solid #111827;
             }
 
-            /* 주 실행 버튼: 선택한 악보로 연습 시작 */
-            QPushButton#btn_start_practice {
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                background-color: transparent;
+                width: 6px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #cbd5e1;
+                border-radius: 3px;
+                min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #94a3b8;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+
+        # 화면 전체 정렬용 외부 레이아웃 (중앙 정렬 담당)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setAlignment(Qt.AlignCenter)
+
+        # 💡 전체 화면 확대 시에도 과도하게 퍼지지 않도록 max-width 지정
+        container = QWidget()
+        container.setMaximumWidth(1160)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(32, 28, 32, 28)
+        container_layout.setSpacing(20)
+
+        # ── [1. 상단 바: 좌측 타이틀 / 중앙 검색창 / 우측 카운트] ──
+        header_bar = QHBoxLayout()
+        header_bar.setSpacing(16)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        lbl_sub = QLabel("LIBRARY")
+        lbl_sub.setStyleSheet("font-size: 11px; font-weight: 800; color: #6b7280; letter-spacing: 1.5px;")
+        title_box.addWidget(lbl_sub)
+
+        lbl_title = QLabel("악보 보관함")
+        lbl_title.setStyleSheet("font-size: 20px; font-weight: 800; color: #111827; letter-spacing: -0.4px;")
+        title_box.addWidget(lbl_title)
+        header_bar.addLayout(title_box)
+
+        # 중앙 검색창
+        header_bar.addStretch(1)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("검색할 곡명을 입력하세요...")
+        self.search_input.setFixedWidth(320)
+        self.search_input.textChanged.connect(self.filter_song_cards)
+        header_bar.addWidget(self.search_input)
+        header_bar.addStretch(1)
+
+        # 우측 곡 수 카운터 뱃지
+        self.lbl_count = QLabel("총 0개의 악보")
+        self.lbl_count.setStyleSheet("""
+            background-color: #ffffff;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #4b5563;
+        """)
+        header_bar.addWidget(self.lbl_count)
+
+        container_layout.addLayout(header_bar)
+
+        # ── [2. 메인 콘텐츠: 좌측 카드 그리드 + 우측 사이드 패널] ──
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(20)
+
+        # 좌측: 스크롤 가능한 카드 그리드 영역
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+
+        self.grid_container = QWidget()
+        self.grid_container.setStyleSheet("background-color: transparent;")
+        self.grid_layout = QGridLayout(self.grid_container)
+        self.grid_layout.setContentsMargins(0, 0, 10, 0)
+        self.grid_layout.setSpacing(14)
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+
+        self.scroll_area.setWidget(self.grid_container)
+        body_layout.addWidget(self.scroll_area, stretch=3)
+
+        # 우측: 관리 및 업로드 사이드 패널 (너비 290px 고정)
+        right_panel = QFrame()
+        right_panel.setObjectName("card_panel")
+        right_panel.setFixedWidth(290)
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(20, 22, 20, 20)
+        right_layout.setSpacing(14)
+
+        lbl_side_title = QLabel("악보 관리")
+        lbl_side_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #111827;")
+        right_layout.addWidget(lbl_side_title)
+
+        lbl_upload_desc = QLabel("새로운 기타프로 파일(.gp3, .gp5)을 파싱하여 보관함에 등록합니다.")
+        lbl_upload_desc.setWordWrap(True)
+        lbl_upload_desc.setStyleSheet("color: #6b7280; font-size: 12px; line-height: 1.4;")
+        right_layout.addWidget(lbl_upload_desc)
+
+        # 새 악보 등록 버튼
+        btn_upload = QPushButton("+ 새 악보 등록 (GuitarPro)")
+        btn_upload.setCursor(Qt.PointingHandCursor)
+        btn_upload.setStyleSheet("""
+            QPushButton {
                 background-color: #111827;
                 color: #ffffff;
                 border: 1px solid #111827;
                 border-radius: 8px;
-                font-size: 14.5px;
-                font-weight: 600;
-                padding: 13px;
-                min-height: 22px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 10px 14px;
             }
-            QPushButton#btn_start_practice:hover {
-                background-color: #27272a;
-                border-color: #27272a;
-            }
-            QPushButton#btn_start_practice:pressed {
-                background-color: #09090b;
-                border-color: #09090b;
-            }
+            QPushButton:hover { background-color: #27272a; }
         """)
+        btn_upload.clicked.connect(lambda: self.start_async_parsing("GP"))
+        right_layout.addWidget(btn_upload)
 
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(28, 28, 28, 28)
-        main_layout.setSpacing(20)
+        # 구분선
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #f1f3f5;")
+        right_layout.addWidget(sep)
 
-        # ── [좌측 메인: 악보 선택 영역] ──
-        left_card = QFrame()
-        left_card.setObjectName("card_panel")
-        left_layout = QVBoxLayout(left_card)
-        left_layout.setContentsMargins(24, 24, 24, 24)
-        left_layout.setSpacing(14)
+        # 팁 카드
+        tip_box = QFrame()
+        tip_box.setStyleSheet("background-color: #f8f9fa; border-radius: 8px; padding: 10px;")
+        tip_layout = QVBoxLayout(tip_box)
+        tip_layout.setContentsMargins(10, 10, 10, 10)
+        tip_layout.setSpacing(4)
+        lbl_tip_title = QLabel("연습 팁")
+        lbl_tip_title.setStyleSheet("font-size: 12px; font-weight: 700; color: #374151;")
+        lbl_tip_desc = QLabel("원하는 곡의 '연습 시작'을 누르면 웹캠을 통한 지판 운지 판정이 바로 시작됩니다.")
+        lbl_tip_desc.setWordWrap(True)
+        lbl_tip_desc.setStyleSheet("font-size: 11.5px; color: #6b7280;")
+        tip_layout.addWidget(lbl_tip_title)
+        tip_layout.addWidget(lbl_tip_desc)
+        right_layout.addWidget(tip_box)
 
-        header_layout = QVBoxLayout()
-        header_layout.setSpacing(4)
-        
-        lbl_sub = QLabel("LIBRARY")
-        lbl_sub.setStyleSheet("font-size: 11px; font-weight: 700; color: #6b7280; letter-spacing: 1.5px;")
-        header_layout.addWidget(lbl_sub)
-
-        lbl_title = QLabel("악보 보관함")
-        lbl_title.setStyleSheet("font-size: 18px; font-weight: 700; color: #111827; letter-spacing: -0.3px;")
-        header_layout.addWidget(lbl_title)
-
-        lbl_desc = QLabel("연습을 진행할 곡을 목록에서 선택하세요.")
-        lbl_desc.setStyleSheet("font-size: 12.5px; color: #6b7280; margin-bottom: 4px;")
-        header_layout.addWidget(lbl_desc)
-
-        left_layout.addLayout(header_layout)
-
-        self.song_list_widget = QListWidget()
-        left_layout.addWidget(self.song_list_widget, stretch=1)
-
-        # 메인 연습 시작 버튼
-        self.btn_start = QPushButton("선택한 악보로 연습 시작")
-        self.btn_start.setObjectName("btn_start_practice")
-        self.btn_start.setCursor(Qt.PointingHandCursor)
-        self.btn_start.clicked.connect(self.launch_practice)
-        left_layout.addWidget(self.btn_start)
-
-        # ── [우측 사이드: 관리 및 업로드 영역] ──
-        right_card = QFrame()
-        right_card.setObjectName("card_panel")
-        right_card.setFixedWidth(340)
-        right_layout = QVBoxLayout(right_card)
-        right_layout.setContentsMargins(20, 24, 20, 24)
-        right_layout.setSpacing(16)
-
-        side_header = QVBoxLayout()
-        side_header.setSpacing(4)
-        lbl_side_sub = QLabel("MANAGEMENT")
-        lbl_side_sub.setStyleSheet("font-size: 11px; font-weight: 700; color: #6b7280; letter-spacing: 1.5px;")
-        side_header.addWidget(lbl_side_sub)
-
-        lbl_side_title = QLabel("데이터 및 편집")
-        lbl_side_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #111827; letter-spacing: -0.3px;")
-        side_header.addWidget(lbl_side_title)
-        right_layout.addLayout(side_header)
-
-        # 악보 등록 그룹
-        upload_group = QGroupBox("악보 등록")
-        upload_layout = QVBoxLayout(upload_group)
-        upload_layout.setContentsMargins(14, 16, 14, 14)
-        upload_layout.setSpacing(10)
-
-        lbl_upload_desc = QLabel("GuitarPro 파일 또는 악보 이미지를 불러와 디지털 시퀀스로 변환합니다.")
-        lbl_upload_desc.setWordWrap(True)
-        lbl_upload_desc.setStyleSheet("color: #6b7280; font-size: 12px; margin-bottom: 4px;")
-        upload_layout.addWidget(lbl_upload_desc)
-
-        self.btn_gp = QPushButton("GuitarPro (gp3/gp5) 파일 가져오기")
-        self.btn_gp.setCursor(Qt.PointingHandCursor)
-        self.btn_img = QPushButton("악보 이미지 (jpg/png) 가져오기")
-        self.btn_img.setCursor(Qt.PointingHandCursor)
-        self.btn_img.setEnabled(False)  # 현재 비활성 상태 유지
-
-        self.btn_gp.clicked.connect(lambda: self.start_async_parsing("GP"))
-        self.btn_img.clicked.connect(lambda: self.start_async_parsing("IMAGE"))
-
-        upload_layout.addWidget(self.btn_gp)
-        upload_layout.addWidget(self.btn_img)
-        right_layout.addWidget(upload_group)
-
-        # 악보 데이터 교정 그룹
-        admin_group = QGroupBox("정밀 편집")
-        admin_layout = QVBoxLayout(admin_group)
-        admin_layout.setContentsMargins(14, 16, 14, 14)
-        admin_layout.setSpacing(10)
-
-        lbl_admin_desc = QLabel("파싱된 악보의 운지, 프렛, 박자 데이터를 직접 확인하고 수정합니다.")
-        lbl_admin_desc.setWordWrap(True)
-        lbl_admin_desc.setStyleSheet("color: #6b7280; font-size: 12px; margin-bottom: 4px;")
-        admin_layout.addWidget(lbl_admin_desc)
-
-        self.btn_admin = QPushButton("악보 데이터 교정 에디터")
-        self.btn_admin.setCursor(Qt.PointingHandCursor)
-        self.btn_admin.clicked.connect(self.go_to_admin)
-        admin_layout.addWidget(self.btn_admin)
-
-        right_layout.addWidget(admin_group)
         right_layout.addStretch(1)
 
-        # 전체 배치 (3:1 비율)
-        main_layout.addWidget(left_card, stretch=3)
-        main_layout.addWidget(right_card, stretch=1)
+        # 하단: 로그인 화면 복귀 (로그아웃)
+        btn_logout = QPushButton("로그인 화면으로 이동")
+        btn_logout.setCursor(Qt.PointingHandCursor)
+        btn_logout.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #6b7280;
+                border: 1px solid #ced4da;
+                border-radius: 8px;
+                font-size: 12.5px;
+                font-weight: 600;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #f8f9fa;
+                color: #111827;
+                border-color: #adb5bd;
+            }
+        """)
+        btn_logout.clicked.connect(self.go_to_login)
+        right_layout.addWidget(btn_logout)
+
+        body_layout.addWidget(right_panel)
+        container_layout.addLayout(body_layout, stretch=1)
+
+        outer_layout.addWidget(container)
 
     def refresh_song_list(self):
-        self.song_list_widget.clear()
+        """로컬 악보 디렉토리를 스캔하여 카드 그리드로 동적 생성"""
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        self.cards = []
         if os.path.exists(self.db_mock_dir):
-            for file in os.listdir(self.db_mock_dir):
-                if file.endswith("_parsed.json"):
-                    self.song_list_widget.addItem(file.replace("_parsed.json", "").upper())
-        if self.song_list_widget.count() > 0:
-            self.song_list_widget.setCurrentRow(0)
+            files = [f for f in os.listdir(self.db_mock_dir) if f.endswith("_parsed.json")]
+            files.sort()
 
-    def launch_practice(self):
-        """곡 선택 확인 후 연습 화면(Index 2) 가동"""
-        current_item = self.song_list_widget.currentItem()
-        if not current_item:
-            QMessageBox.warning(self, "악보 미선택", "연습을 시작할 악보를 목록에서 먼저 선택해 주세요.")
-            return
+            self.lbl_count.setText(f"총 {len(files)}개의 악보")
 
-        target_path = os.path.join(self.db_mock_dir, f"{current_item.text().lower()}_parsed.json")
+            columns = 2  # 우측 패널이 있으므로 좌측은 2열 카드가 시각적으로 가장 안정적임
+            for idx, file in enumerate(files):
+                song_title = file.replace("_parsed.json", "")
+                file_path = os.path.join(self.db_mock_dir, file)
+
+                card = ScoreCard(
+                    song_title=song_title,
+                    file_path=file_path,
+                    on_practice_cb=self.launch_practice_by_path,
+                    on_edit_cb=self.go_to_admin_by_path,
+                )
+                card.setFixedWidth(275)
+
+                row = idx // columns
+                col = idx % columns
+                self.grid_layout.addWidget(card, row, col)
+                self.cards.append((song_title.lower(), card))
+
+    def filter_song_cards(self, text):
+        query = text.strip().lower()
+        visible_idx = 0
+        columns = 2
+
+        for song_title, card in self.cards:
+            if not query or query in song_title:
+                card.setVisible(True)
+                self.grid_layout.removeWidget(card)
+                row = visible_idx // columns
+                col = visible_idx % columns
+                self.grid_layout.addWidget(card, row, col)
+                visible_idx += 1
+            else:
+                card.setVisible(False)
+
+    def launch_practice_by_path(self, target_path):
         if not os.path.exists(target_path):
             QMessageBox.critical(self, "파일 오류", f"선택한 악보 파일이 존재하지 않습니다:\n{target_path}")
             return
@@ -402,6 +524,17 @@ class SelectPage(QWidget):
             self.main_window.switch_to_practice(target_path)
         else:
             self.main_window.stacked_widget.setCurrentIndex(2)
+
+    def go_to_admin_by_path(self, target_path):
+        if hasattr(self.main_window, "switch_to_admin"):
+            self.main_window.switch_to_admin(target_path)
+        else:
+            self.main_window.stacked_widget.setCurrentIndex(3)
+
+    def go_to_login(self):
+        """로그인 화면(Index 0)으로 복귀"""
+        if hasattr(self.main_window, "stacked_widget"):
+            self.main_window.stacked_widget.setCurrentIndex(0)
 
     def start_async_parsing(self, mode):
         if mode == "GP":
@@ -423,24 +556,10 @@ class SelectPage(QWidget):
         self.parse_thread.start()
 
     def on_parsing_completed(self, success, message):
-        if self.loading_dialog:
+        if hasattr(self, "loading_dialog") and self.loading_dialog:
             self.loading_dialog.close()
         if success:
             QMessageBox.information(self, "처리 완료", message)
             self.refresh_song_list()
         else:
             QMessageBox.critical(self, "오류", message)
-
-    def go_to_admin(self):
-        """곡 선택 여부와 무관하게 에디터 페이지(Index 3)로 확실히 이동"""
-        item = self.song_list_widget.currentItem()
-        path = None
-        if item:
-            candidate_path = os.path.join(self.db_mock_dir, f"{item.text().lower()}_parsed.json")
-            if os.path.exists(candidate_path):
-                path = candidate_path
-
-        if hasattr(self.main_window, "switch_to_admin"):
-            self.main_window.switch_to_admin(path)
-        else:
-            self.main_window.stacked_widget.setCurrentIndex(3)
