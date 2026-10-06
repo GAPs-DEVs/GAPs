@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, perf_counter
 
@@ -419,18 +419,10 @@ class PracticeVideoWorker(QThread):
                 reference_fret_index=reference_fret_index,
             )
 
-        edge_refinement = refine_grid_with_edge_lines_diagnostics(
-            frame_bgr,
-            tracking_result.stable_grid,
-            string_tracker=self.string_line_tracker,
-            suppressed_fret_indices=frozenset(),
-            apply_fret_refinement=False,
-            yolo_detected_lines=tracking_frame.support_lines,
-        )
-        # The registered board owns AR coordinates. Image edges are diagnostics;
-        # a finger edge or a shortened detector segment must not move the marker.
+        # Calibrated guides use only the registered model. Per-frame edge
+        # diagnostics do not affect their coordinates; keep them in the viewer.
         stable_grid = tracking_result.stable_grid
-        edge_refinement = replace(edge_refinement, grid=stable_grid)
+        edge_refinement = None
         note_markers = (
             self._build_current_note_markers(stable_grid, edge_refinement, calibrated=True)
             if tracking_result.tracking_mode != "selected_lines_hold" else ()

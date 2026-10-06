@@ -9,6 +9,8 @@ in that case recovery deliberately fails rather than guessing a fret number.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import cv2
 import numpy as np
 
@@ -65,6 +67,78 @@ class FretboardVisualReference:
         self._reference_points: np.ndarray | None = None
         self._reference_descriptors: np.ndarray | None = None
         self._tiles: tuple[tuple[slice, slice], ...] = ()
+        self._coarse_template = None
+        self._coarse_template_dx = None
+        self._frame_source = None
+        self._frame_mask = None
+        self._frame_values = {}
+
+    @contextmanager
+    def frame_scope(self, frame: np.ndarray, exclusion_mask=None):
+        """Reuse work only inside one update with unchanged input pixels/mask.
+
+        Explicit lifetime matters: a camera can reuse and mutate its ndarray
+        on the next frame. Standalone method calls never reuse cached results.
+        """
+        if self._frame_source is not None:
+            raise RuntimeError('Reference frame scopes cannot overlap.')
+        self._frame_source = frame
+        self._frame_mask = exclusion_mask
+        self._frame_values = {}
+        try:
+            yield
+        finally:
+            self._frame_source = None
+            self._frame_mask = None
+            self._frame_values = {}
+
+    def _remember(self, frame, key, compute):
+        if frame is not self._frame_source or key is None:
+            return compute()
+        if key not in self._frame_values:
+            self._frame_values[key] = compute()
+        return self._frame_values[key]
+
+    def _pose_key(self, operation, homography, *options):
+        matrix = np.asarray(homography)
+        # Exact values, not rounded poses: nearby poses must still be tested.
+        return (operation, matrix.dtype.str, matrix.shape, matrix.tobytes(), *options)
+
+    def _frame_gray(self, frame):
+        return self._remember(frame, 'gray', lambda: _readonly(_gray(frame)))
+
+    def _canonical_image(self, frame, homography):
+        def compute():
+            height, width = self.template.shape
+            transform = self._canonical_from_reference @ np.linalg.inv(homography)
+            current = cv2.warpPerspective(self._frame_gray(frame), transform, (width, height)).astype(np.float32)
+            current = cv2.GaussianBlur(current, (5, 5), .85)
+            dx = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3)
+            return _readonly(current), _readonly(dx), transform
+        return self._remember(frame, self._pose_key('image', homography), compute)
+
+    def _canonical_valid(self, frame, homography, exclusion_mask, *, erode_hand=False):
+        erode_hand = erode_hand and exclusion_mask is not None
+        cacheable = exclusion_mask is self._frame_mask
+
+        def image_mask():
+            mask = np.full(frame.shape[:2], 255, dtype=np.uint8)
+            if exclusion_mask is not None:
+                mask[np.asarray(exclusion_mask) > 0] = 0
+                if erode_hand:
+                    mask = cv2.erode(mask, np.ones((5, 5), dtype=np.uint8))
+            return mask
+
+        def compute():
+            height, width = self.template.shape
+            _, _, transform = self._canonical_image(frame, homography)
+            mask = self._remember(frame, ('mask', erode_hand) if cacheable else None, image_mask)
+            valid = self._template_valid & (cv2.warpPerspective(
+                mask, transform, (width, height), flags=cv2.INTER_NEAREST,
+            ) > 0)
+            return _readonly(valid)
+        key = self._pose_key('valid', homography, erode_hand) if cacheable else None
+        return self._remember(frame, key, compute)
 
     @property
     def is_ready(self) -> bool:
@@ -146,32 +220,30 @@ class FretboardVisualReference:
 
     def validate(self, frame: np.ndarray, homography: np.ndarray, exclusion_mask=None,
                  *, coarse: bool = False) -> bool:
+        key = self._pose_key('validate', homography, coarse) if exclusion_mask is self._frame_mask else None
+        return self._remember(frame, key, lambda: self._validate(frame, homography, exclusion_mask, coarse=coarse))
+
+    def _validate(self, frame, homography, exclusion_mask, *, coarse):
         if not self.is_ready or not self._valid_projection(homography, frame.shape):
             return False
         try:
-            current_to_canonical = self._canonical_from_reference @ np.linalg.inv(homography)
+            current, current_dx, _ = self._canonical_image(frame, homography)
         except np.linalg.LinAlgError:
             return False
         height, width = self.template.shape
-        current = cv2.warpPerspective(_gray(frame), current_to_canonical, (width, height)).astype(np.float32)
-        current = cv2.GaussianBlur(current, (5, 5), 0.85)
         template = self.template
         template_dx = self._template_dx
         if coarse:
             # Only the bounded continuity path may use this scale. Compare both
             # images at the same scale; keep all spatial and correlation gates.
-            template = cv2.GaussianBlur(template, (9, 9), 2.)
+            if self._coarse_template is None:
+                self._coarse_template = _readonly(cv2.GaussianBlur(template, (9, 9), 2.))
+                self._coarse_template_dx = _readonly(cv2.Sobel(self._coarse_template, cv2.CV_32F, 1, 0, ksize=3))
+            template = self._coarse_template
             current = cv2.GaussianBlur(current, (9, 9), 2.)
-            template_dx = cv2.Sobel(template, cv2.CV_32F, 1, 0, ksize=3)
-        current_dx = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3)
-        current_mask = np.full(frame.shape[:2], 255, dtype=np.uint8)
-        if exclusion_mask is not None:
-            current_mask[np.asarray(exclusion_mask) > 0] = 0
-            # Avoid comparing pixels blurred across the boundary of a hand.
-            current_mask = cv2.erode(current_mask, np.ones((5, 5), dtype=np.uint8))
-        valid = self._template_valid & (cv2.warpPerspective(
-            current_mask, current_to_canonical, (width, height), flags=cv2.INTER_NEAREST,
-        ) > 0)
+            template_dx = self._coarse_template_dx
+            current_dx = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3)
+        valid = self._canonical_valid(frame, homography, exclusion_mask, erode_hand=True)
         available = 0
         accepted = []
         for ys, xs in self._tiles:
@@ -212,15 +284,8 @@ class FretboardVisualReference:
         fallback = homography if self.validate(frame, homography, exclusion_mask) else None
         height, width = self.template.shape
         canonical = self._canonical_from_reference
-        into_template = canonical @ np.linalg.inv(homography)
-        current = cv2.warpPerspective(_gray(frame), into_template, (width, height)).astype(np.float32)
-        current = cv2.GaussianBlur(current, (5, 5), .85)
-        current_dx = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3)
-        valid = np.full(frame.shape[:2], 255, dtype=np.uint8)
-        if exclusion_mask is not None:
-            valid[exclusion_mask > 0] = 0
-        valid = cv2.warpPerspective(valid, into_template, (width, height), flags=cv2.INTER_NEAREST)
-        valid[~self._template_valid] = 0
+        current, current_dx, _ = self._canonical_image(frame, homography)
+        valid = self._canonical_valid(frame, homography, exclusion_mask).astype(np.uint8) * 255
         # The mask may miss a finger. Reject visibly different template tiles
         # too, instead of asking the dense optimizer to align that moving skin.
         supported = np.zeros_like(valid)
@@ -273,19 +338,14 @@ class FretboardVisualReference:
     def _visible_tile_scores(self, frame: np.ndarray, homography: np.ndarray,
                              exclusion_mask=None) -> dict[int, float]:
         """Score reference regions with local appearance and transverse support."""
+        key = self._pose_key('scores', homography) if exclusion_mask is self._frame_mask else None
+        return self._remember(frame, key, lambda: self._compute_tile_scores(frame, homography, exclusion_mask))
+
+    def _compute_tile_scores(self, frame, homography, exclusion_mask):
         if not self.is_ready or not self._valid_projection(homography, frame.shape):
             return {}
-        height, width = self.template.shape
-        into_template = self._canonical_from_reference @ np.linalg.inv(homography)
-        current = cv2.warpPerspective(_gray(frame), into_template, (width, height)).astype(np.float32)
-        current = cv2.GaussianBlur(current, (5, 5), .85)
-        dx = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3)
-        image_mask = np.full(frame.shape[:2], 255, dtype=np.uint8)
-        if exclusion_mask is not None:
-            image_mask[exclusion_mask > 0] = 0
-        valid = self._template_valid & (cv2.warpPerspective(
-            image_mask, into_template, (width, height), flags=cv2.INTER_NEAREST,
-        ) > 0)
+        current, dx, _ = self._canonical_image(frame, homography)
+        valid = self._canonical_valid(frame, homography, exclusion_mask)
         scores = {}
         for index, (ys, xs) in enumerate(self._tiles):
             use = valid[ys, xs]
@@ -337,9 +397,7 @@ class FretboardVisualReference:
         not become a source of neck features on the following frame.
         """
         height, width = self.template.shape
-        into_template = self._canonical_from_reference @ np.linalg.inv(homography)
-        current = cv2.warpPerspective(_gray(frame), into_template, (width, height)).astype(np.float32)
-        current = cv2.GaussianBlur(current, (5, 5), .85)
+        current, _, _ = self._canonical_image(frame, homography)
         trusted = np.zeros((height, width), dtype=np.uint8)
         scores = self._visible_tile_scores(frame, homography, exclusion_mask)
         for index in scores:
@@ -363,7 +421,7 @@ class FretboardVisualReference:
     def estimate(self, frame: np.ndarray, exclusion_mask=None) -> np.ndarray | None:
         if not self.is_ready or self._reference_descriptors is None:
             return None
-        gray = _gray(frame)
+        gray = self._frame_gray(frame)
         factor = min(1.0, 1280.0 / max(gray.shape))
         if factor < 1:
             gray = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)

@@ -324,6 +324,10 @@ class HybridSelectedLineTracker:
 
     def update(self, frame: np.ndarray, detect: Detector, exclusion_mask=None,
                *, diagnostics: bool = False, timestamp: float | None = None) -> HybridTrackingFrame:
+        with self.reference.frame_scope(frame, exclusion_mask):
+            return self._update_frame(frame, detect, exclusion_mask, diagnostics=diagnostics, timestamp=timestamp)
+
+    def _update_frame(self, frame, detect, exclusion_mask, *, diagnostics, timestamp):
         timestamp = monotonic() if timestamp is None else timestamp
         self.frame_index += 1
         if self.anchor_grid is None:
