@@ -1,70 +1,32 @@
-{
-  "title": "score_practice_sample",
-  "notes": [
-    {
-      "step": 1,
-      "string": 5,
-      "fret": 3
-    },
-    {
-      "step": 2,
-      "string": 5,
-      "fret": 5
-    },
-    {
-      "step": 3,
-      "string": 4,
-      "fret": 2
-    },
-    {
-      "step": 4,
-      "string": 4,
-      "fret": 3
-    },
-    {
-      "step": 5,
-      "string": 4,
-      "fret": 5
-    },
-    {
-      "step": 6,
-      "string": 3,
-      "fret": 2
-    },
-    {
-      "step": 7,
-      "string": 2,
-      "fret": 0
-    },
-    {
-      "step": 8,
-      "string": 2,
-      "fret": 1
-    },
-    {
-      "step": 9,
-      "string": 5,
-      "fret": 3
-    },
-    {
-      "step": 9,
-      "string": 4,
-      "fret": 2
-    },
-    {
-      "step": 9,
-      "string": 3,
-      "fret": 0
-    },
-    {
-      "step": 10,
-      "string": 1,
-      "fret": 7
-    },
-    {
-      "step": 10,
-      "string": 6,
-      "fret": 0
-    }
-  ]
-}
+[
+  {
+    "step": 1,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 1,
+    "string": 1,
+    "fret": 7,
+    "duration_ms": 230,
+    "midi_pitch": 71
+  },
+  {
+    "step": 1,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 1,
+    "string": 6,
+    "fret": 0,
+    "duration_ms": 230,
+    "midi_pitch": 40
+  },
+  {
+    "step": 2,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 2,
+    "string": 2,
+    "fret": 0,
+    "duration_ms": 230,
+    "midi_pitch": 59
+  }
+]

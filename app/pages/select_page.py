@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal
 import guitarpro
 
+from app.api_client import api_client
+
 MEASURES_PER_SCORE_LINE = 4
 STEPS_PER_FALLBACK_SCORE_LINE = 16
 
@@ -256,8 +258,17 @@ class SelectPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        from app.config import DEFAULT_SCORE_PATH
-        self.db_mock_dir = os.path.dirname(os.path.abspath(DEFAULT_SCORE_PATH))
+
+        # 프로젝트 루트 기준 data/cached_scores 전용 캐시 폴더 설정
+        current_dir = os.path.dirname(os.path.abspath(__file__))  # app/pages/
+        app_dir = os.path.dirname(current_dir)  # app/
+        project_root = os.path.dirname(app_dir)  # 프로젝트 루트
+
+        self.db_mock_dir = os.path.join(
+            project_root, "data", "cached_scores"
+        )
+        os.makedirs(self.db_mock_dir, exist_ok=True)
+
         self.init_ui()
         self.refresh_song_list()
 
@@ -439,7 +450,7 @@ class SelectPage(QWidget):
         right_layout.addStretch(1)
 
         # 하단: 로그인 화면 복귀 (로그아웃)
-        btn_logout = QPushButton("로그인 화면으로 이동")
+        btn_logout = QPushButton("로그아웃")
         btn_logout.setCursor(Qt.PointingHandCursor)
         btn_logout.setStyleSheet("""
             QPushButton {
@@ -555,11 +566,122 @@ class SelectPage(QWidget):
         self.parse_thread.parsing_finished.connect(self.on_parsing_completed)
         self.parse_thread.start()
 
+    # def on_parsing_completed(self, success, message):
+    #     if hasattr(self, "loading_dialog") and self.loading_dialog:
+    #         self.loading_dialog.close()
+    #     if success:
+    #         QMessageBox.information(self, "처리 완료", message)
+    #         self.refresh_song_list()
+    #     else:
+    #         QMessageBox.critical(self, "오류", message)
+    def sync_with_server(self):
+        """로그인 후 서버의 최신 악보 목록과 동기화"""
+        success, result = api_client.sync_scores(self.db_mock_dir)
+        if success:
+            if result > 0:
+                print(f"[동기화 성공] 서버로부터 {result}개의 신규 악보를 다운로드했습니다.")
+                self.refresh_song_list()
+            else:
+                print("[동기화 확인] 로컬 악보 보관함이 최신 상태입니다.")
+        else:
+            print(f"[동기화 실패/건너뜀] {result}")
+
+    # 적용직전(26.10.08 19:11)
+    # def on_parsing_completed(self, success, message):
+    #     if hasattr(self, "loading_dialog") and self.loading_dialog:
+    #         self.loading_dialog.close()
+
+    #     if success:
+    #         # 💡 [핵심] 파싱 완료 시 로컬 저장에 이어 서버 POST /api/scores 전송
+    #         base_name = getattr(self.parse_thread, "file_path", "")
+    #         song_title = os.path.splitext(os.path.basename(base_name))[0].lower()
+    #         output_json_path = os.path.join(self.db_mock_dir, f"{song_title}_parsed.json")
+
+    #         if os.path.exists(output_json_path):
+    #             try:
+    #                 with open(output_json_path, "r", encoding="utf-8") as f:
+    #                     parsed_data = json.load(f)
+
+    #                 # 백엔드로 전송
+    #                 up_ok, up_msg = api_client.upload_score(f"{song_title}_parsed.json", parsed_data)
+    #                 if up_ok:
+    #                     message += "\n(서버 클라우드 동기화 완료)"
+    #                 else:
+    #                     message += f"\n(로컬 저장 완료 / 서버 업로드 실패: {up_msg})"
+    #             except Exception as e:
+    #                 print(f"[업로드 예외] {e}")
+
+    #         QMessageBox.information(self, "처리 완료", message)
+    #         self.refresh_song_list()
+    #     else:
+    #         QMessageBox.critical(self, "오류", message)
+            
     def on_parsing_completed(self, success, message):
+        """GuitarPro 파싱 완료 시 백엔드 업로드 및 화면 갱신"""
         if hasattr(self, "loading_dialog") and self.loading_dialog:
             self.loading_dialog.close()
+
         if success:
-            QMessageBox.information(self, "처리 완료", message)
+            base_file_path = getattr(self.parse_thread, "file_path", "")
+            raw_title = os.path.splitext(os.path.basename(base_file_path))[0]
+            clean_title = raw_title.replace("_", " ").title()
+            output_json_path = os.path.join(self.db_mock_dir, f"{raw_title.lower()}_parsed.json")
+
+            if os.path.exists(output_json_path):
+                try:
+                    with open(output_json_path, "r", encoding="utf-8") as f:
+                        parsed_data = json.load(f)
+
+                    # 💡 백엔드 스펙에 맞춰 전체 음표 리스트를 그대로 전송
+                    up_ok, up_res = api_client.upload_score(
+                        title=f"{clean_title} - Client Upload",
+                        parsed_notes=parsed_data,
+                        source_type="guitar_pro"
+                    )
+
+                    if up_ok:
+                        message += f"\n\n[클라우드 동기화 완료]\n서버 악보 보관함에 안전하게 등록되었습니다."
+                    else:
+                        message += f"\n\n[로컬 저장 완료 / 서버 업로드 실패]\n{up_res}"
+
+                except Exception as e:
+                    print(f"[업로드 예외] {e}")
+                    message += f"\n(업로드 예외: {e})"
+
+            QMessageBox.information(self, "악보 등록 결과", message)
             self.refresh_song_list()
         else:
-            QMessageBox.critical(self, "오류", message)
+            QMessageBox.critical(self, "파싱 실패", message)
+            
+    def clear_local_scores(self):
+        """로컬 악보 저장소(self.db_mock_dir)의 캐시 파일들을 모두 삭제"""
+        try:
+            if hasattr(self, "db_mock_dir") and os.path.exists(self.db_mock_dir):
+                for filename in os.listdir(self.db_mock_dir):
+                    file_path = os.path.join(self.db_mock_dir, filename)
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                print(f"[캐시 정리] 로컬 악보 파일({self.db_mock_dir})이 모두 정리되었습니다.")
+
+            # 현재 화면의 카드 그리드 비우기
+            if hasattr(self, "refresh_song_list"):
+                self.refresh_song_list()
+        except Exception as e:
+            print(f"[캐시 정리 실패] {e}")
+
+    def go_to_login(self):
+        """로그인 화면 복귀 처리 (로컬 악보 삭제 + 세션 초기화 + 화면 이동)"""
+        # 1. 로컬에 저장되어 있던 이전 유저의 악보 파일들 삭제
+        self.clear_local_scores()
+
+        # 2. 백엔드 인증 토큰 제거
+        api_client.logout()
+
+        # 3. 로그인 화면으로 이동
+        if hasattr(self, "main_window") and hasattr(
+            self.main_window, "stacked_widget"
+        ):
+            self.main_window.stacked_widget.setCurrentIndex(0)
+            print("[네비게이션] 로그인 화면으로 복귀했습니다.")
