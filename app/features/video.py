@@ -38,6 +38,7 @@ from vision.fretboard_mapping import (
     count_detected_classes,
 )
 from vision.fretboard_motion import HybridSelectedLineTracker, HybridTrackingFrame, filter_visible_markers
+from vision.fretboard_recovery import BackgroundFretboardRecovery
 from vision.hand_tracking import Fingertip, HandTrackingResult, MediaPipeHandTracker, HandOcclusionMasker
 
 
@@ -76,6 +77,10 @@ class PracticeFrameStats:
     stable_grid: StableFretboardGrid | None = None
     edge_refinement: EdgeRefinementResult | None = None
     hand_mask_available: bool = False
+    hand_mask_ms: float = 0.
+    tracking_ms: float = 0.
+    last_recovery_ms: float = 0.
+    recovery_pending: bool = False
 
 
 class PracticeVideoWorker(QThread):
@@ -108,7 +113,9 @@ class PracticeVideoWorker(QThread):
         self.tracker = FretboardTracker(max_history=5)
         self.note_marker_tracker = NoteMarkerTracker()
         self.selected_line_tracker = SelectedLineTracker(max_history=5)
-        self.hybrid_tracker = HybridSelectedLineTracker(self.selected_line_tracker)
+        self.hybrid_tracker = HybridSelectedLineTracker(
+            self.selected_line_tracker, recovery=BackgroundFretboardRecovery(),
+        )
         self.occlusion_masker = HandOcclusionMasker()
         self.latest_exclusion_mask = None
         self.manual_tracking_requested = False
@@ -123,6 +130,7 @@ class PracticeVideoWorker(QThread):
         self.pending_reference_fret_index: int | None = None
         self._running = True
         self._capture: LatestFrameCapture | None = None
+        self._clear_tracking_requested = False
 
     def stop(self) -> None:
         self._running = False
@@ -205,6 +213,11 @@ class PracticeVideoWorker(QThread):
         self.manual_tracking_requested = True
 
     def clear_manual_tracking(self) -> None:
+        # Apply tracker/reference mutations on their owning video thread.
+        self.manual_tracking_requested = False
+        self._clear_tracking_requested = True
+
+    def _clear_manual_tracking(self) -> None:
         self.manual_tracking_requested = False
         self.selected_line_tracker.clear()
         self.hybrid_tracker.clear()
@@ -229,6 +242,7 @@ class PracticeVideoWorker(QThread):
                 self.error_message.emit(str(exc))
         finally:
             capture.close()
+            self.hybrid_tracker.close()
             self._capture = None
             self.occlusion_masker.close()
             if self.hand_tracker is not None:
@@ -238,6 +252,9 @@ class PracticeVideoWorker(QThread):
         previous_frame_time = perf_counter()
 
         while self._running:
+            if self._clear_tracking_requested:
+                self._clear_tracking_requested = False
+                self._clear_manual_tracking()
             self._apply_pending_calibration()
             if self.pending_reference_fret_index is not None:
                 reference_index = self.pending_reference_fret_index
@@ -278,6 +295,8 @@ class PracticeVideoWorker(QThread):
             self.latest_frame_bgr = frame_bgr.copy()
             inference_start = perf_counter()
             self.latest_exclusion_mask = self.occlusion_masker.process(frame_bgr)
+            hand_mask_ms = (perf_counter() - inference_start) * 1000
+            tracking_start = perf_counter()
 
             if self.selection_request:
                 annotated, analysis = self._analyze_selection_frame(model, frame_bgr)
@@ -334,6 +353,10 @@ class PracticeVideoWorker(QThread):
                 stable_grid=analysis.stable_grid,
                 edge_refinement=analysis.edge_refinement,
                 hand_mask_available=self.occlusion_masker.available,
+                hand_mask_ms=hand_mask_ms,
+                tracking_ms=(perf_counter() - tracking_start) * 1000,
+                last_recovery_ms=self.hybrid_tracker.last_recovery_ms,
+                recovery_pending=self.hybrid_tracker.recovery.busy,
             )
             self.frame_ready.emit(bgr_to_qimage(annotated), stats)
 

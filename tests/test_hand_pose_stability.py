@@ -6,18 +6,21 @@ import pytest
 from test_fretboard_observation import rendered_board
 from vision.fretboard_mapping import SelectedLineTracker
 from vision.fretboard_motion import HybridSelectedLineTracker, grid_quad
+from vision.fretboard_recovery import BackgroundFretboardRecovery
 
 
 @pytest.mark.parametrize('moving_board', [False, True])
 @pytest.mark.parametrize('finger_width', [18, 30])
 @pytest.mark.parametrize('partial_hand_mask', [False, True])
+@pytest.mark.parametrize('background', [False, True])
 def test_textured_finger_motion_preserves_fret_coordinates_and_clean_features(
-    moving_board, finger_width, partial_hand_mask,
+    moving_board, finger_width, partial_hand_mask, background, request,
 ):
     frame, grid = rendered_board()
     selected = SelectedLineTracker()
     selected.initialize_from_lines(grid.nut_line, grid.ordered_fret_lines[-1], 7)
-    tracker = HybridSelectedLineTracker(selected)
+    tracker = HybridSelectedLineTracker(selected, recovery=BackgroundFretboardRecovery() if background else None)
+    request.addfinalizer(tracker.close)
     tracker.seed(frame)
     texture = np.random.default_rng(25).integers(55, 210, (140, finger_width, 3), dtype=np.uint8)
     reference_crossings = np.asarray(grid.string_crossings, dtype=np.float32).reshape(-1, 1, 2)
