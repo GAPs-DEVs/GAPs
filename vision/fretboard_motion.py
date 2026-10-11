@@ -392,7 +392,12 @@ class HybridSelectedLineTracker:
         elif pose is None:
             self._clear_recovery()
 
-        if pose is not None and not directly_aligned:
+        # Both flow paths still have to pass the immutable-image checks and
+        # agree geometrically on EVERY frame. When they do, a dense ECC solve
+        # is only a periodic subpixel correction, not evidence needed to track.
+        # Recovery and uncertain flow retain immediate direct refinement.
+        needs_refinement = recovered or not (anchor_valid and incremental_valid) or self.frame_index % 5 == 0
+        if pose is not None and not directly_aligned and needs_refinement:
             pose = self.reference.refine(frame, pose, exclusion_mask)
 
         # Revalidate the last pose against this frame before allowing a hand to

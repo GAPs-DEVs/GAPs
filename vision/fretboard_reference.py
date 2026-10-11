@@ -312,7 +312,10 @@ class FretboardVisualReference:
         try:
             _, correction = cv2.findTransformECC(
                 self.template, current, np.eye(3, dtype=np.float32), cv2.MOTION_HOMOGRAPHY,
-                (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 35, 1e-5), supported, 3,
+                # This is a bounded correction of an existing flow pose. Keep
+                # its cost below a full recovery solve; acceptance below still
+                # requires improved appearance and independent validation.
+                (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 12, 1e-5), supported, 3,
             )
         except cv2.error:
             return fallback

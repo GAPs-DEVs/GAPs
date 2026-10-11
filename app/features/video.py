@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic, perf_counter
+from time import perf_counter
 
 import cv2
 from PySide6.QtCore import QThread, Signal
@@ -10,6 +10,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget
 
 from app.practice_markers import build_practice_step_note_markers
+from app.features.video_capture import LatestFrameCapture
 from practice.score_steps import PracticeStep
 from tools.fretboard_detection_viewer import (
     TRACKING_CONF_FLOOR,
@@ -121,9 +122,13 @@ class PracticeVideoWorker(QThread):
         self.pending_calibrated_selection: tuple[StableFretboardGrid, int] | None = None
         self.pending_reference_fret_index: int | None = None
         self._running = True
+        self._capture: LatestFrameCapture | None = None
 
     def stop(self) -> None:
         self._running = False
+        capture = self._capture
+        if capture is not None:
+            capture.request_stop()
         self.wait(2000)
 
     def set_current_step(self, current_step: PracticeStep | None) -> None:
@@ -214,17 +219,22 @@ class PracticeVideoWorker(QThread):
             self.error_message.emit(str(exc))
             return
 
-        capture = cv2.VideoCapture(self.camera_index)
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        capture = LatestFrameCapture(self.camera_index)
+        self._capture = capture
+        capture.start()
+        try:
+            self._run_frames(model, capture)
+        except Exception as exc:  # pragma: no cover - GUI error path
+            if self._running:
+                self.error_message.emit(str(exc))
+        finally:
+            capture.close()
+            self._capture = None
+            self.occlusion_masker.close()
+            if self.hand_tracker is not None:
+                self.hand_tracker.close()
 
-        if not capture.isOpened():
-            self.error_message.emit(
-                f"Could not open webcam index {self.camera_index}. Check camera permission or another camera index."
-            )
-            capture.release()
-            return
-
+    def _run_frames(self, model, capture: LatestFrameCapture) -> None:
         previous_frame_time = perf_counter()
 
         while self._running:
@@ -255,11 +265,11 @@ class PracticeVideoWorker(QThread):
                 self.msleep(30)
                 continue
 
-            ok, frame_bgr = capture.read()
-            frame_timestamp = monotonic()
-            if not ok:
-                self.error_message.emit("Failed to read frame from webcam.")
+            captured = capture.read()
+            if captured is None:
                 break
+            frame_bgr = captured.image
+            frame_timestamp = captured.timestamp
 
             if self.camera_calibration is not None:
                 frame_bgr = self.camera_calibration.undistort_frame(frame_bgr)
@@ -326,11 +336,6 @@ class PracticeVideoWorker(QThread):
                 hand_mask_available=self.occlusion_masker.available,
             )
             self.frame_ready.emit(bgr_to_qimage(annotated), stats)
-
-        capture.release()
-        self.occlusion_masker.close()
-        if self.hand_tracker is not None:
-            self.hand_tracker.close()
 
     def _analyze_selection_frame(self, model, frame_bgr) -> tuple[object, PracticeFrameAnalysis]:
         detected_lines = predict_detected_lines(
