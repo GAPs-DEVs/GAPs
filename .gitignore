@@ -45,3 +45,6 @@ pip-wheel-metadata/
 
 # Logs
 *.log
+
+# Local camera performance reports
+/artifacts/performance/

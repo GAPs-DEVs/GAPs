@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 
 import cv2
 from PySide6.QtCore import QThread, Signal
@@ -81,6 +81,11 @@ class PracticeFrameStats:
     tracking_ms: float = 0.
     last_recovery_ms: float = 0.
     recovery_pending: bool = False
+    captured_at: float | None = None
+    emitted_at: float | None = None
+    capture_sequence: int = 0
+    capture_fps: float = 0.
+    ar_expected: bool = False
 
 
 class PracticeVideoWorker(QThread):
@@ -357,8 +362,16 @@ class PracticeVideoWorker(QThread):
                 tracking_ms=(perf_counter() - tracking_start) * 1000,
                 last_recovery_ms=self.hybrid_tracker.last_recovery_ms,
                 recovery_pending=self.hybrid_tracker.recovery.busy,
+                captured_at=captured.timestamp,
+                capture_sequence=captured.sequence,
+                capture_fps=captured.capture_fps,
+                ar_expected=(self.hybrid_tracker.anchor_grid is not None and self.current_step is not None
+                             and any(note.fret_number <= (self.selected_line_tracker.reference_fret_index or 0)
+                                     for note in self.current_step.notes)),
             )
-            self.frame_ready.emit(bgr_to_qimage(annotated), stats)
+            image = bgr_to_qimage(annotated)
+            stats.emitted_at = monotonic()
+            self.frame_ready.emit(image, stats)
 
     def _analyze_selection_frame(self, model, frame_bgr) -> tuple[object, PracticeFrameAnalysis]:
         detected_lines = predict_detected_lines(

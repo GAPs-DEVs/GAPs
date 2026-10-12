@@ -68,6 +68,8 @@ def test_slow_consumer_gets_newest_frame_and_original_capture_timestamp(camera):
     packet = capture.read()
     assert np.all(packet.image == 3)
     assert packet.timestamp == 12.
+    assert packet.sequence == 3
+    assert packet.capture_fps == 1.
 
 
 def test_backend_buffer_reuse_cannot_mutate_consumed_or_frozen_pixels(camera):

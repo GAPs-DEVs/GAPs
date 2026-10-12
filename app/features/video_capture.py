@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
 from threading import Condition, Event, Thread
 from time import monotonic
 
@@ -13,6 +14,8 @@ import numpy as np
 class CapturedFrame:
     image: np.ndarray
     timestamp: float
+    sequence: int = 0
+    capture_fps: float = 0.
 
 
 class LatestFrameCapture:
@@ -71,6 +74,8 @@ class LatestFrameCapture:
                     f"Could not open webcam index {self.camera_index}. "
                     "Check camera permission or another camera index."
                 )
+            sequence = 0
+            capture_times = deque(maxlen=60)
             while not self._stop.is_set():
                 ok, frame = capture.read()
                 timestamp = monotonic()
@@ -80,7 +85,11 @@ class LatestFrameCapture:
                     raise RuntimeError("Failed to read frame from webcam.")
                 # Backends may reuse their array on the next read. Own pixels
                 # before publishing so a frozen calibration frame stays frozen.
-                packet = CapturedFrame(frame.copy(), timestamp)
+                sequence += 1
+                capture_times.append(timestamp)
+                elapsed = capture_times[-1] - capture_times[0]
+                capture_fps = (len(capture_times) - 1) / elapsed if elapsed > 0 else 0.
+                packet = CapturedFrame(frame.copy(), timestamp, sequence, capture_fps)
                 with self._condition:
                     self._latest = packet
                     self._condition.notify_all()

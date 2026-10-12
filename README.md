@@ -105,6 +105,46 @@ uv run python -m app.main --model models/best06.pt --camera-calibration /absolut
 uv run python -m tools.benchmark_tracking_recovery
 ```
 
+실제 카메라 FPS와 AR 표시 유지 여부를 실시간으로 확인하려면 다음 도구를 사용하세요. 메인 앱의 카메라·지판 맞추기·비동기 재탐색 경로를 그대로 사용합니다.
+
+```bash
+uv run python -m tools.frame_performance_viewer --camera 0
+```
+
+1. `카메라 시작`을 누르고 맞추기 전 상태를 약 10초 측정합니다.
+2. 중간·끝 프렛 번호를 입력하고 `지판 맞추기`를 완료합니다.
+3. 가만히 유지하기 → 손으로 일부 가리기 → 가볍게 흔들기 → 화면 밖으로 뺐다가 돌아오기를 각각 시도합니다.
+4. 하단 `실시간` 탭에서 입력/화면 FPS, 프레임 간격 p95, 50ms 초과 프레임, 입력→화면 지연, AR 표시율을 확인합니다. `구간 비교` 탭은 맞추기 전·정상 추적·흐림 보완·추적 상실을 나눠 보여줍니다.
+5. `결과 저장`을 누르면 `artifacts/performance/fps-날짜-시각/`에 `summary.json`과 `frames.csv`가 저장됩니다. `--output-dir 경로`로 저장 위치를 바꿀 수 있습니다. 카메라 영상은 저장하지 않습니다.
+
+실시간 수치는 최근 5초, 구간 비교와 저장 결과는 최근 10분을 기준으로 합니다. 지판을 선택하며 화면이 멈추는 구간과 `측정 일시정지` 구간은 끊김 통계에서 제외합니다. 창을 가리거나 최소화하면 화면 다시그리기 FPS가 낮아질 수 있으니 측정 중에는 영상 창을 보이게 두세요.
+
+화면 FPS는 새로운 영상이 Qt 다시그리기에 도달한 횟수이며 모니터의 물리적 주사율과는 다릅니다. 입력→화면 시간은 카메라 읽기 반환부터 계산하므로 카메라 내부 버퍼·노출 시간은 포함하지 않습니다. `입력 생략`은 최신 프레임만 처리하며 건너뛴 영상 수입니다. AR 표시율은 보정 범위 안의 연습 음이 있을 때 안내점이 표시된 프레임 비율이며, 위치 정확도는 화면을 보며 확인하세요. AR 미표시 시간에는 기타가 화면 밖에 있던 시간도 포함됩니다.
+
+`main`과 현재 개선 버전을 비교하려면 **현재 작업 폴더에서** 아래 명령을 하나씩 실행합니다. 첫 프로그램을 종료한 다음 다른 버전을 실행하세요.
+
+```bash
+uv run python -m tools.run_frame_performance --version main --camera 0
+uv run python -m tools.run_frame_performance --version current --camera 0
+```
+
+첫 `main` 실행은 `artifacts/performance/main-worktree/`에 로컬 `main`의 detached worktree를 만들고, 시간 기록과 동일한 측정 화면만 추가합니다. 카메라 읽기·추적·재탐색 알고리즘은 각 버전 것을 사용합니다. 생성된 기준 커밋은 이후 실행에서도 유지되며 원격 저장소를 자동으로 가져오거나 `main`을 갱신하지 않습니다. UI 실행 없이 준비만 하려면 `--version main --prepare-only`를 사용하세요. 비교용 작업 폴더의 코드를 직접 수정하면 실행 준비가 변경을 감지하고 중단할 수 있습니다.
+
+두 버전은 실행한 Python 환경과 현재 작업 폴더의 기본 모델·악보를 공유합니다. `--model`, `--score-json`, `--camera-calibration`으로 동일 파일을 지정할 수도 있습니다. `main`은 카메라를 처리 루프에서 동기적으로 읽으므로 독립적인 입력 FPS·입력 생략·백그라운드 재탐색 시간은 `—`로 표시합니다. 출력 FPS, 프레임 간격, 처리 시간, AR 표시율은 동일한 기준으로 측정합니다. 읽기 완료→화면 지연에는 카메라 내부 버퍼 시간이 빠져 있어 두 방식의 전체 지연을 직접 비교하는 값으로 사용하면 안 됩니다.
+
+각 버전에서 같은 조명·카메라·창 크기·기준 프렛·연습 음을 유지하고, 맞추기 전 10초 → 정상 추적 30초 → 손 가림·흔들기 20초 → 화면 밖으로 뺐다가 복귀 10초를 측정하세요. 카메라와 모델 초기 준비가 끝난 뒤 통계를 초기화하고 시작하는 편이 좋습니다. `main`과 `current`를 번갈아 각각 3회 이상 반복하고 정상 추적 FPS를 우선 비교하세요.
+
+`결과 저장`을 누르면 각각 `artifacts/performance/main/fps-.../`, `artifacts/performance/current/fps-.../`에 기록됩니다. 커밋, 수정 상태, Python 소스 해시(미커밋·새 파일 포함), 모델·악보 해시, 실제 영상 크기와 화면 크기도 저장합니다. 두 결과 폴더를 지정하면 비교표를 출력합니다.
+
+```bash
+uv run python -m tools.compare_frame_performance \
+  artifacts/performance/main/fps-실제저장폴더 \
+  artifacts/performance/current/fps-실제저장폴더 \
+  --output artifacts/performance/comparison.md
+```
+
+비교표는 구간별 FPS·FPS 변화율·프레임 간격 p95와 전체 AR 표시율 등을 보여줍니다. 모델이나 화면 크기 등이 다르면 조건 불일치를 표시합니다. 예전 결과도 읽을 수 있지만 당시 기록하지 않은 조건은 확인 불가로 표시합니다. 전체 FPS와 AR 사라짐 횟수는 구간 비중·측정 길이의 영향을 받으므로 테스트 동작과 시간도 함께 맞춰야 합니다.
+
 ```bash
 uv run pytest tests/test_fretboard_reference.py tests/test_reference_tracking.py tests/test_fretboard_motion.py tests/test_marker_visibility.py tests/test_tracking_occlusion.py tests/test_tracking_calibration_ui.py
 ```
