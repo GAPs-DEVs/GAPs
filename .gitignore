@@ -48,3 +48,6 @@ pip-wheel-metadata/
 
 # Logs
 *.log
+
+# Local backup retained when extracting the backend; may contain credentials.
+.backend-local-backup/

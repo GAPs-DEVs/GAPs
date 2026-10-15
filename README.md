@@ -156,7 +156,7 @@ uv run pytest tests/test_practice_markers.py tests/test_score_steps.py tests/tes
 
 ## 개발 참고
 
-- DB·API·HTTPS 설정과 테스트는 [서버 문서 목록](docs/README.md)을 참고하세요.
+- DB·API·HTTPS 코드와 운영 문서는 별도 [백엔드 저장소](https://github.com/junseok-jay/Guitar_Practice_Backend)에서 관리합니다.
 
 - 메인 앱 개발 규칙은 `app/DEVELOPMENT_GUIDE.md`를 따릅니다.
 - 사용자 앱의 실행 진입점은 `app/main.py`입니다.

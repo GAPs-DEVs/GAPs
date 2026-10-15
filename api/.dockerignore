@@ -1,8 +1,0 @@
-# Allow runtime files only. Never send environment secrets to the image builder.
-**
-!requirements.txt
-!manage.py
-!config/
-!config/**
-**/__pycache__/
-**/*.pyc
