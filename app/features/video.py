@@ -10,6 +10,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget
 
 from app.practice_markers import build_practice_step_note_markers
+from app.features.video_capture import LatestFrameCapture
 from practice.score_steps import PracticeStep
 from tools.fretboard_detection_viewer import (
     TRACKING_CONF_FLOOR,
@@ -37,6 +38,7 @@ from vision.fretboard_mapping import (
     count_detected_classes,
 )
 from vision.fretboard_motion import HybridSelectedLineTracker, HybridTrackingFrame, filter_visible_markers
+from vision.fretboard_recovery import BackgroundFretboardRecovery
 from vision.hand_tracking import Fingertip, HandTrackingResult, MediaPipeHandTracker, HandOcclusionMasker
 
 
@@ -75,6 +77,15 @@ class PracticeFrameStats:
     stable_grid: StableFretboardGrid | None = None
     edge_refinement: EdgeRefinementResult | None = None
     hand_mask_available: bool = False
+    hand_mask_ms: float = 0.
+    tracking_ms: float = 0.
+    last_recovery_ms: float = 0.
+    recovery_pending: bool = False
+    captured_at: float | None = None
+    emitted_at: float | None = None
+    capture_sequence: int = 0
+    capture_fps: float = 0.
+    ar_expected: bool = False
 
 
 class PracticeVideoWorker(QThread):
@@ -107,7 +118,9 @@ class PracticeVideoWorker(QThread):
         self.tracker = FretboardTracker(max_history=5)
         self.note_marker_tracker = NoteMarkerTracker()
         self.selected_line_tracker = SelectedLineTracker(max_history=5)
-        self.hybrid_tracker = HybridSelectedLineTracker(self.selected_line_tracker)
+        self.hybrid_tracker = HybridSelectedLineTracker(
+            self.selected_line_tracker, recovery=BackgroundFretboardRecovery(),
+        )
         self.occlusion_masker = HandOcclusionMasker()
         self.latest_exclusion_mask = None
         self.manual_tracking_requested = False
@@ -121,9 +134,14 @@ class PracticeVideoWorker(QThread):
         self.pending_calibrated_selection: tuple[StableFretboardGrid, int] | None = None
         self.pending_reference_fret_index: int | None = None
         self._running = True
+        self._capture: LatestFrameCapture | None = None
+        self._clear_tracking_requested = False
 
     def stop(self) -> None:
         self._running = False
+        capture = self._capture
+        if capture is not None:
+            capture.request_stop()
         self.wait(2000)
 
     def set_current_step(self, current_step: PracticeStep | None) -> None:
@@ -200,6 +218,11 @@ class PracticeVideoWorker(QThread):
         self.manual_tracking_requested = True
 
     def clear_manual_tracking(self) -> None:
+        # Apply tracker/reference mutations on their owning video thread.
+        self.manual_tracking_requested = False
+        self._clear_tracking_requested = True
+
+    def _clear_manual_tracking(self) -> None:
         self.manual_tracking_requested = False
         self.selected_line_tracker.clear()
         self.hybrid_tracker.clear()
@@ -214,20 +237,29 @@ class PracticeVideoWorker(QThread):
             self.error_message.emit(str(exc))
             return
 
-        capture = cv2.VideoCapture(self.camera_index)
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        capture = LatestFrameCapture(self.camera_index)
+        self._capture = capture
+        capture.start()
+        try:
+            self._run_frames(model, capture)
+        except Exception as exc:  # pragma: no cover - GUI error path
+            if self._running:
+                self.error_message.emit(str(exc))
+        finally:
+            capture.close()
+            self.hybrid_tracker.close()
+            self._capture = None
+            self.occlusion_masker.close()
+            if self.hand_tracker is not None:
+                self.hand_tracker.close()
 
-        if not capture.isOpened():
-            self.error_message.emit(
-                f"Could not open webcam index {self.camera_index}. Check camera permission or another camera index."
-            )
-            capture.release()
-            return
-
+    def _run_frames(self, model, capture: LatestFrameCapture) -> None:
         previous_frame_time = perf_counter()
 
         while self._running:
+            if self._clear_tracking_requested:
+                self._clear_tracking_requested = False
+                self._clear_manual_tracking()
             self._apply_pending_calibration()
             if self.pending_reference_fret_index is not None:
                 reference_index = self.pending_reference_fret_index
@@ -255,11 +287,11 @@ class PracticeVideoWorker(QThread):
                 self.msleep(30)
                 continue
 
-            ok, frame_bgr = capture.read()
-            frame_timestamp = monotonic()
-            if not ok:
-                self.error_message.emit("Failed to read frame from webcam.")
+            captured = capture.read()
+            if captured is None:
                 break
+            frame_bgr = captured.image
+            frame_timestamp = captured.timestamp
 
             if self.camera_calibration is not None:
                 frame_bgr = self.camera_calibration.undistort_frame(frame_bgr)
@@ -268,6 +300,8 @@ class PracticeVideoWorker(QThread):
             self.latest_frame_bgr = frame_bgr.copy()
             inference_start = perf_counter()
             self.latest_exclusion_mask = self.occlusion_masker.process(frame_bgr)
+            hand_mask_ms = (perf_counter() - inference_start) * 1000
+            tracking_start = perf_counter()
 
             if self.selection_request:
                 annotated, analysis = self._analyze_selection_frame(model, frame_bgr)
@@ -324,13 +358,20 @@ class PracticeVideoWorker(QThread):
                 stable_grid=analysis.stable_grid,
                 edge_refinement=analysis.edge_refinement,
                 hand_mask_available=self.occlusion_masker.available,
+                hand_mask_ms=hand_mask_ms,
+                tracking_ms=(perf_counter() - tracking_start) * 1000,
+                last_recovery_ms=self.hybrid_tracker.last_recovery_ms,
+                recovery_pending=self.hybrid_tracker.recovery.busy,
+                captured_at=captured.timestamp,
+                capture_sequence=captured.sequence,
+                capture_fps=captured.capture_fps,
+                ar_expected=(self.hybrid_tracker.anchor_grid is not None and self.current_step is not None
+                             and any(note.fret_number <= (self.selected_line_tracker.reference_fret_index or 0)
+                                     for note in self.current_step.notes)),
             )
-            self.frame_ready.emit(bgr_to_qimage(annotated), stats)
-
-        capture.release()
-        self.occlusion_masker.close()
-        if self.hand_tracker is not None:
-            self.hand_tracker.close()
+            image = bgr_to_qimage(annotated)
+            stats.emitted_at = monotonic()
+            self.frame_ready.emit(image, stats)
 
     def _analyze_selection_frame(self, model, frame_bgr) -> tuple[object, PracticeFrameAnalysis]:
         detected_lines = predict_detected_lines(

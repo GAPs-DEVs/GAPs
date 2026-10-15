@@ -19,6 +19,7 @@ app/
   practice_markers.py     # PracticeStep -> 지판 위 AR 점 변환
   features/
     video.py              # 카메라, 지판 검출, AR 오버레이 워커
+    video_capture.py      # 카메라 입력 스레드, 최신 프레임 한 장 유지
     practice_audio.py     # 인터랙티브 연습용 오디오 워커 연결/판정 보조
     audio_devices.py      # 마이크 입력 장치 목록
   ui/
@@ -32,6 +33,7 @@ app/
 ## 기능 추가 위치
 
 - 카메라/지판 검출/AR 점 표시 변경: `app/features/video.py`, `app/practice_markers.py`
+- 지판 비동기 재탐색: `vision/fretboard_recovery.py`. 기준 영상의 읽기 전용 스냅샷을 사용하며, 재탐색 결과를 현재 영상에서 검증하는 부분은 `vision/fretboard_motion.py`에 둡니다.
 - 음 인식, 정답 판정, 인터랙티브 진행 변경: `app/features/practice_audio.py`, `audio/`
 - 마이크 선택 관련 변경: `app/features/audio_devices.py`, `app/ui/practice_panel.py`
 - 악보 파일 로드 기능 추가: 새 파일 `app/features/score_loader.py` 권장, 화면은 `app/ui/score_panel.py` 권장

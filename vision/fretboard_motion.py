@@ -21,6 +21,7 @@ from vision.fretboard_mapping import (
 )
 
 from vision.fretboard_reference import FretboardVisualReference
+from vision.fretboard_recovery import BackgroundFretboardRecovery, RecoveryResult
 from vision.fretboard_prediction import CornerMotionPredictor
 from vision.marker_visibility import filter_visible_markers
 
@@ -222,13 +223,17 @@ class HybridSelectedLineTracker:
     shape, change fret IDs, reseed the reference, or revive a missing image.
     """
 
-    def __init__(self, tracker: SelectedLineTracker) -> None:
+    def __init__(self, tracker: SelectedLineTracker, *,
+                 recovery: BackgroundFretboardRecovery | None = None) -> None:
         self.tracker = tracker
+        self.recovery = recovery
         self.motion = FretboardMotionTracker()
         self.reference = FretboardVisualReference()
         self.clear()
 
     def clear(self) -> None:
+        if self.recovery is not None:
+            self.recovery.reset()
         self.motion.clear()
         self.reference.clear()
         self.anchor_motion = FretboardMotionTracker()
@@ -246,6 +251,14 @@ class HybridSelectedLineTracker:
         self.was_visible = False
         self.last_verified_at = float('-inf')
         self.continuity_frames = 0
+        self._async_confirmation_pose = None
+        self._async_descriptor_frame = -1
+        self.last_recovery_ms = 0.
+        self.last_recovery_error = None
+
+    def close(self) -> None:
+        if self.recovery is not None:
+            self.recovery.close()
 
     def seed(self, frame: np.ndarray, exclusion_mask=None) -> None:
         self.clear()
@@ -257,6 +270,8 @@ class HybridSelectedLineTracker:
         self.anchor_motion.commit(frame, self.anchor_grid, refresh=True, exclusion_mask=exclusion_mask)
         self.coarse_motion.commit(frame, self.anchor_grid, refresh=True, exclusion_mask=exclusion_mask)
         self.reference.seed(frame, self.anchor_grid, exclusion_mask)
+        if self.recovery is not None:
+            self.recovery.reset(self.reference)
         self.was_visible = True
         self.last_verified_at = monotonic()
 
@@ -294,6 +309,90 @@ class HybridSelectedLineTracker:
         self.pending_recovery_frame = -1
         self.pending_recovery_at = float('-inf')
         self.recovery_motion.clear()
+        self._async_confirmation_pose = None
+        self._async_descriptor_frame = -1
+
+    def _advance_async_confirmation(self, frame, timestamp, exclusion_mask):
+        """Carry a pending descriptor pose using independent current-image flow.
+
+        A second descriptor result may arrive several frames later. Never use
+        that result to hint the flow that is supposed to independently check it.
+        """
+        if self.pending_recovery is None:
+            return
+        if (self.pending_recovery_frame != self.frame_index - 1
+                or not 0 <= timestamp - self.pending_recovery_at <= .5):
+            self._clear_recovery()
+            return
+        movement = self.recovery_motion.estimate(frame, self.pending_recovery, exclusion_mask)
+        pose = movement @ self._async_confirmation_pose if movement is not None else None
+        if not self._verified(frame, pose, exclusion_mask):
+            self._clear_recovery()
+            return
+        self._async_confirmation_pose = pose
+        self.pending_recovery = transform_grid(self.anchor_grid, pose)
+        self.pending_recovery_frame = self.frame_index
+        mask = self.reference.tracking_exclusion(frame, pose, exclusion_mask)
+        self.recovery_motion.commit(frame, self.pending_recovery, refresh=True, exclusion_mask=mask)
+
+    def _transport_recovery(self, result: RecoveryResult, frame, timestamp, exclusion_mask):
+        """Move delayed source-frame coordinates into THIS frame before use."""
+        request = result.request
+        if (result.pose is None or request.frame_index >= self.frame_index
+                or not 0 <= timestamp - request.timestamp <= .5
+                or request.frame.shape != frame.shape):
+            return None
+        source_grid = transform_grid(self.anchor_grid, result.pose)
+        source_mask = self.reference.tracking_exclusion(request.frame, result.pose, request.exclusion_mask)
+        transport = FretboardMotionTracker()
+        transport.commit(request.frame, source_grid, refresh=True, exclusion_mask=source_mask)
+        movement = transport.estimate(frame, source_grid, exclusion_mask)
+        pose = movement @ result.pose if movement is not None else None
+        return pose if self._verified(frame, pose, exclusion_mask) else None
+
+    def _background_pose(self, frame, pose, timestamp, exclusion_mask):
+        result = self.recovery.poll()
+        if result is not None:
+            self.last_recovery_ms = result.elapsed_ms
+            self.last_recovery_error = result.error
+        if pose is not None:
+            # Fresh, verified flow has already recovered; a delayed search
+            # must not overwrite it or force otherwise visible markers off.
+            return pose, False, False
+        self._advance_async_confirmation(frame, timestamp, exclusion_mask)
+        if self._verified(frame, self.last_pose, exclusion_mask):
+            return self.last_pose, False, False
+        continuity_pose = self._brief_continuity(frame, exclusion_mask)
+        candidate = self._transport_recovery(result, frame, timestamp, exclusion_mask) if result is not None else None
+        if candidate is not None:
+            candidate_grid = transform_grid(self.anchor_grid, candidate)
+            jump = np.max(np.linalg.norm(
+                grid_quad(candidate_grid) - grid_quad(transform_grid(self.anchor_grid, self.last_pose)), axis=1,
+            ))
+            agrees = (self.pending_recovery is not None
+                      and result.request.frame_index > self._async_descriptor_frame
+                      and np.max(np.linalg.norm(grid_quad(candidate_grid) - grid_quad(self.pending_recovery), axis=1)) < 6)
+            if jump <= 12 or agrees:
+                self._clear_recovery()
+                return candidate, True, False
+            # Large jumps require two independent descriptor observations as
+            # well as the inter-frame flow and unchanged reference validation.
+            self.pending_recovery = candidate_grid
+            self.pending_recovery_at = timestamp
+            self.pending_recovery_frame = self.frame_index
+            self._async_confirmation_pose = candidate
+            self._async_descriptor_frame = result.request.frame_index
+            mask = self.reference.tracking_exclusion(frame, candidate, exclusion_mask)
+            self.recovery_motion.clear()
+            self.recovery_motion.commit(frame, candidate_grid, refresh=True, exclusion_mask=mask)
+        search_pose = (self._async_confirmation_pose if self.pending_recovery is not None else
+                       continuity_pose if continuity_pose is not None else self.last_pose)
+        self.recovery.submit(
+            frame, exclusion_mask, search_pose, timestamp=timestamp, frame_index=self.frame_index,
+            confirmation=self.pending_recovery is not None,
+        )
+        continuity = continuity_pose is not None and not self.reference.validate(frame, continuity_pose, exclusion_mask)
+        return continuity_pose, False, continuity
 
     def _confirm_recovery(self, frame, candidate, timestamp, exclusion_mask):
         """Confirm two descriptor poses in the SAME frame's coordinates.
@@ -373,14 +472,17 @@ class HybridSelectedLineTracker:
             if np.max(np.linalg.norm(first - second, axis=1)) >= tolerance:
                 pose = None  # Resolve disagreement from descriptors, not fret repetitions.
 
-        recovered = False
-        if pose is None and (self.pending_recovery is not None or self.frame_index - self.last_full_search >= 3):
+        recovered = continuity = False
+        if self.recovery is not None:
+            pose, recovered, continuity = self._background_pose(frame, pose, timestamp, exclusion_mask)
+            directly_aligned = directly_aligned or recovered
+        elif pose is None and (self.pending_recovery is not None or self.frame_index - self.last_full_search >= 3):
             self.last_full_search = self.frame_index
             candidate = self.reference.estimate(frame, exclusion_mask)
             if self._verified(frame, candidate, exclusion_mask):
                 pose = candidate
                 recovered = True
-        if pose is not None and recovered:
+        if self.recovery is None and pose is not None and recovered:
             candidate_grid = transform_grid(self.anchor_grid, pose)
             jump = np.max(np.linalg.norm(grid_quad(candidate_grid) - grid_quad(previous_grid), axis=1))
             if jump > 12:
@@ -389,17 +491,22 @@ class HybridSelectedLineTracker:
                     pose = None
             else:
                 self._clear_recovery()
-        elif pose is None:
+        elif self.recovery is None and pose is None:
             self._clear_recovery()
 
-        if pose is not None and not directly_aligned:
+        # Both flow paths still have to pass the immutable-image checks and
+        # agree geometrically on EVERY frame. When they do, a dense ECC solve
+        # is only a periodic subpixel correction, not evidence needed to track.
+        # Recovery and uncertain flow retain immediate direct refinement.
+        needs_refinement = recovered or not (anchor_valid and incremental_valid) or self.frame_index % 5 == 0
+        if pose is not None and not continuity and not directly_aligned and needs_refinement:
             pose = self.reference.refine(frame, pose, exclusion_mask)
 
         # Revalidate the last pose against this frame before allowing a hand to
         # nudge the neck. This is fresh visual evidence, not a stale-pose hold.
-        pose = self.reference.select_pose(frame, pose, self.last_pose, exclusion_mask)
-        continuity = False
-        if pose is None:
+        if not continuity:
+            pose = self.reference.select_pose(frame, pose, self.last_pose, exclusion_mask)
+        if pose is None and self.recovery is None:
             candidate = self._brief_continuity(frame, exclusion_mask)
             if candidate is not None:
                 pose = candidate
@@ -433,7 +540,8 @@ class HybridSelectedLineTracker:
             self.continuity_frames = 0
             self.last_verified_at = monotonic()
         self.was_visible = True
-        self._clear_recovery()
+        if not continuity:
+            self._clear_recovery()
         tracking_mask = self.reference.tracking_exclusion(frame, pose, exclusion_mask)
         self.motion.commit(frame, grid, refresh=not continuity, exclusion_mask=tracking_mask)
         # The seed image, its feature positions and the seed grid stay untouched.

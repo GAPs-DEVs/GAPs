@@ -73,6 +73,21 @@ class FretboardVisualReference:
         self._frame_mask = None
         self._frame_values = {}
 
+    def recovery_snapshot(self) -> FretboardVisualReference:
+        """Share immutable calibration arrays, never SIFT or frame caches.
+
+        A background search may outlive a recalibration. Rebinding the live
+        reference must not change the image that an in-flight search validates.
+        """
+        snapshot = FretboardVisualReference()
+        for name in (
+            'reference_grid', 'reference_gray', 'template', '_template_dx',
+            '_template_valid', '_canonical_from_reference', '_reference_quad',
+            '_reference_points', '_reference_descriptors', '_tiles',
+        ):
+            setattr(snapshot, name, getattr(self, name))
+        return snapshot
+
     @contextmanager
     def frame_scope(self, frame: np.ndarray, exclusion_mask=None):
         """Reuse work only inside one update with unchanged input pixels/mask.
@@ -312,7 +327,10 @@ class FretboardVisualReference:
         try:
             _, correction = cv2.findTransformECC(
                 self.template, current, np.eye(3, dtype=np.float32), cv2.MOTION_HOMOGRAPHY,
-                (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 35, 1e-5), supported, 3,
+                # This is a bounded correction of an existing flow pose. Keep
+                # its cost below a full recovery solve; acceptance below still
+                # requires improved appearance and independent validation.
+                (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 12, 1e-5), supported, 3,
             )
         except cv2.error:
             return fallback
@@ -418,16 +436,26 @@ class FretboardVisualReference:
         trusted = cv2.erode(trusted, np.ones((7, 7), dtype=np.uint8))
         return np.where(trusted > 0, 0, 255).astype(np.uint8)
 
-    def estimate(self, frame: np.ndarray, exclusion_mask=None) -> np.ndarray | None:
+    def estimate(self, frame: np.ndarray, exclusion_mask=None, *,
+                 roi: tuple[int, int, int, int] | None = None,
+                 max_side: int = 1280) -> np.ndarray | None:
         if not self.is_ready or self._reference_descriptors is None:
             return None
         gray = self._frame_gray(frame)
-        factor = min(1.0, 1280.0 / max(gray.shape))
+        height, width = gray.shape
+        left, top, right, bottom = (0, 0, width, height) if roi is None else roi
+        left, top = max(0, int(left)), max(0, int(top))
+        right, bottom = min(width, int(right)), min(height, int(bottom))
+        if right - left < 16 or bottom - top < 16:
+            return None
+        gray = gray[top:bottom, left:right]
+        crop_height, crop_width = gray.shape
+        factor = min(1.0, max(32, max_side) / max(gray.shape))
         if factor < 1:
             gray = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
         mask = None
         if exclusion_mask is not None:
-            mask = np.where(exclusion_mask > 0, 0, 255).astype(np.uint8)
+            mask = np.where(exclusion_mask[top:bottom, left:right] > 0, 0, 255).astype(np.uint8)
             if factor < 1:
                 mask = cv2.resize(mask, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
             mask = cv2.erode(mask, np.ones((5, 5), dtype=np.uint8))
@@ -444,7 +472,11 @@ class FretboardVisualReference:
         if len(matches) < 12:
             return None
         old = self._reference_points[[match.queryIdx for match in matches]]
-        new = np.asarray([keypoints[match.trainIdx].pt for match in matches], dtype=np.float32) / factor
+        # Use actual resize dimensions, including rounding, and restore the
+        # crop origin. All validation and returned poses use camera pixels.
+        scale = np.asarray((gray.shape[1] / crop_width, gray.shape[0] / crop_height), dtype=np.float32)
+        new = (np.asarray([keypoints[match.trainIdx].pt for match in matches], dtype=np.float32)
+               / scale + np.asarray((left, top), dtype=np.float32))
         homography, inliers = cv2.findHomography(old, new, cv2.RANSAC, 2.0, maxIters=2500, confidence=0.995)
         if homography is None or inliers is None:
             return None
