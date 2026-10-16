@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 import guitarpro
 
 from app.api_client import api_client
+from app.features.score_loader import list_available_scores
 
 MEASURES_PER_SCORE_LINE = 4
 STEPS_PER_FALLBACK_SCORE_LINE = 16
@@ -485,29 +486,23 @@ class SelectPage(QWidget):
                 widget.deleteLater()
 
         self.cards = []
-        if os.path.exists(self.db_mock_dir):
-            files = [f for f in os.listdir(self.db_mock_dir) if f.endswith("_parsed.json")]
-            files.sort()
 
-            self.lbl_count.setText(f"총 {len(files)}개의 악보")
+        score_entries = list_available_scores(self.db_mock_dir)
 
-            columns = 2  # 우측 패널이 있으므로 좌측은 2열 카드가 시각적으로 가장 안정적임
-            for idx, file in enumerate(files):
-                song_title = file.replace("_parsed.json", "")
-                file_path = os.path.join(self.db_mock_dir, file)
-
-                card = ScoreCard(
-                    song_title=song_title,
-                    file_path=file_path,
-                    on_practice_cb=self.launch_practice_by_path,
-                    on_edit_cb=self.go_to_admin_by_path,
-                )
-                card.setFixedWidth(275)
-
-                row = idx // columns
-                col = idx % columns
-                self.grid_layout.addWidget(card, row, col)
-                self.cards.append((song_title.lower(), card))
+        self.lbl_count.setText(f"총 {len(score_entries)}개의 악보")
+        columns = 2  # 우측 패널 공간을 확보하기 위해 카드를 2열로 배치한다.
+        for idx, (song_title, file_path) in enumerate(score_entries):
+            card = ScoreCard(
+                song_title=song_title,
+                file_path=file_path,
+                on_practice_cb=self.launch_practice_by_path,
+                on_edit_cb=self.go_to_admin_by_path,
+            )
+            card.setFixedWidth(275)
+            row = idx // columns
+            col = idx % columns
+            self.grid_layout.addWidget(card, row, col)
+            self.cards.append((song_title.lower(), card))
 
     def filter_song_cards(self, text):
         query = text.strip().lower()
