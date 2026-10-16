@@ -64,7 +64,9 @@ def test_six_point_calibration_works_without_any_detected_lines(window):
     window.handle_video_click(180, 310)
     args = window.video_worker.apply_calibrated_selection.call_args.args
     assert args[0].nut_line.kind == 'nut'
-    assert args[0].ordered_fret_lines[-1].p0 == (80, 310)
+    # 원근 변환에서 발생하는 부동소수점 반올림 오차는 허용하되,
+    # 실제 선택한 끝 프렛의 좌표가 보존되는지는 계속 검사한다.
+    assert args[0].ordered_fret_lines[-1].p0 == pytest.approx((80, 310))
     assert args[1] == 7
     assert window.selection_stage == 'idle'
 

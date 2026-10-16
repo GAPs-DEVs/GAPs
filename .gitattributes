@@ -1,0 +1,7 @@
+# 두 OS의 체크아웃에서 실행 소스와 설정의 줄바꿈을 동일하게 유지한다.
+*.py text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.python-version text eol=lf

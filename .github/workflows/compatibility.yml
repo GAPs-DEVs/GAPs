@@ -1,0 +1,45 @@
+name: Windows and macOS compatibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macos-14는 Apple Silicon 러너다. 실제 장치 권한/영상 품질은 수동 검증한다.
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+        python: ['3.13', '3.14']
+    env:
+      QT_QPA_PLATFORM: offscreen
+      # .python-version의 공통 기본값보다 CI 행의 Python 선택을 우선한다.
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.10.12'
+          enable-cache: true
+      - name: Install the locked binary packages
+        # OS가 달라도 동일한 잠금 파일을 사용하며, 지원 wheel 누락을 조기에 잡는다.
+        run: uv sync --frozen --no-build
+      - name: Check native imports and resource files
+        run: uv run --frozen python -m tools.check_environment
+      - name: Check application entry point
+        run: uv run --frozen python -m app.main --help
+      - name: Run tests without camera or microphone access
+        run: uv run --frozen python -m pytest -q --junitxml=test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.python }}
+          path: test-results.xml

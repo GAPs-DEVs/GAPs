@@ -3,14 +3,14 @@ name = "guitar-fret-test"
 version = "0.1.0"
 description = "Desktop guitar fretboard detector built with PySide6, YOLO, and MediaPipe."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.15"
 dependencies = [
-    "google-auth-oauthlib",
+    "google-auth-oauthlib>=1.5.0",
     "google-genai>=2.8.0",
     "librosa>=0.11",
     "mediapipe>=0.10",
     "numpy>=2.0",
-    "opencv-python>=4.10",
+    "opencv-contrib-python>=4.10",
     "pyguitarpro>=0.11",
     "PySide6>=6.7",
     "sounddevice>=0.5",
@@ -28,3 +28,12 @@ pythonpath = ["."]
 
 [tool.uv]
 package = false
+required-version = ">=0.10.12"
+# MediaPipe에 필요한 contrib 배포판이 일반 OpenCV 기능도 제공한다.
+# Ultralytics가 요구하는 일반판까지 설치하면 두 패키지가 cv2를 덮어쓴다.
+exclude-dependencies = ["opencv-python"]
+# 새 의존성을 잠글 때도 두 대상 OS의 바이너리가 존재하는지 함께 확인한다.
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]

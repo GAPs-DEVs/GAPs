@@ -33,7 +33,6 @@ pip-wheel-metadata/
 .env
 .env.*
 !.env.example
-.python-version
 
 # Editor / OS files
 .vscode/
@@ -48,3 +47,4 @@ pip-wheel-metadata/
 
 # Local camera performance reports
 /artifacts/performance/
+/artifacts/ui/

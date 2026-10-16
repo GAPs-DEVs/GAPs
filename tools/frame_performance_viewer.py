@@ -5,12 +5,11 @@ Run: python -m tools.frame_performance_viewer --camera 0
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import platform
 import sys
 from time import monotonic
-from zoneinfo import ZoneInfo
 
 import cv2
 from PySide6.QtCore import QEvent, Qt, QTimer, qVersion
@@ -242,7 +241,9 @@ class FramePerformanceWindow(MainWindow):
         if not self.monitor.records:
             self.save_status.setText('저장할 측정값이 없습니다. 카메라를 시작해주세요.')
             return
-        now = datetime.now(ZoneInfo('Asia/Seoul'))
+        # 보고서 파일명은 현재 한국 시각(UTC+9)만 필요하다.
+        # 고정 오프셋을 사용하면 Windows에서도 별도 tzdata 설치 없이 저장된다.
+        now = datetime.now(timezone(timedelta(hours=9)))
         directory = self.output_dir / now.strftime('fps-%Y%m%d-%H%M%S-%f')
         self.monitor.break_stream()
         try:
