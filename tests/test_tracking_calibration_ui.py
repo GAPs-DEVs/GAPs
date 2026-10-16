@@ -119,9 +119,31 @@ def test_invalid_middle_line_returns_to_middle_selection(window):
 def test_calibration_fields_unlock_after_camera_stops(window):
     window.render_current_frame()
     assert not window.reference_fret_spin.isEnabled()
+    assert not window.video_label.pixmap().isNull()
     window.on_video_worker_finished()
     assert window.reference_fret_spin.isEnabled()
     assert window.tracking_panel.middle_fret_spin.isEnabled()
+    assert window.video_label.current_image is None
+    assert window.video_label.pixmap().isNull()
+    assert window.video_label.text() == window.video_label.placeholder_text
+    window.render_current_frame()
+    assert window.video_label.pixmap().isNull()
+
+
+def test_camera_stop_clears_preview_and_ignores_queued_frames(window):
+    window.render_current_frame()
+    last_frame = window.video_label.current_image
+    worker = window.video_worker
+    window.stop_video()
+    worker.stop.assert_called_once()
+    assert window.video_label.current_image is None
+    window.update_frame(last_frame, Mock())
+    assert window.video_label.current_image is None
+    assert window.video_label.text() == window.video_label.placeholder_text
+    window.on_video_worker_finished()
+    window.update_frame(last_frame, Mock())
+    assert window.video_label.current_image is None
+    assert window.video_label.pixmap().isNull()
 
 
 def show_practice(window):

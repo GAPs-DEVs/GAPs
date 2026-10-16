@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
             raise ValueError("score JSON must contain at least one practice step.")
 
         self.video_worker: PracticeVideoWorker | None = None
+        self._video_stopping = False
         self.audio_controller = PracticeAudioController(self)
         self.audio_controller.result_ready.connect(self._handle_audio_result)
         self.audio_controller.error_message.connect(self._handle_audio_error)
@@ -95,7 +96,7 @@ class MainWindow(QMainWindow):
         self.auto_flow_timer.setSingleShot(True)
         self.auto_flow_timer.timeout.connect(self._handle_auto_flow_tick)
 
-        self.video_label = VideoSurface("카메라를 시작하면 기타 지판 위에 연습할 위치가 표시됩니다.")
+        self.video_label = VideoSurface("카메라가 꺼져있습니다.")
         self.video_label.clicked.connect(self.handle_video_click)
         self.practice_tab_strip = PracticeTabStrip()
 
@@ -614,6 +615,7 @@ class MainWindow(QMainWindow):
         self.video_worker.frame_ready.connect(self.update_frame)
         self.video_worker.error_message.connect(self.handle_video_error)
         self.video_worker.finished.connect(self.on_video_worker_finished)
+        self._video_stopping = False
         self.camera_panel.set_running(True)
         self.selection_stage = "idle"
         self.tracking_panel.hint_label.setText(TrackingPanel.READY_HINT)
@@ -624,10 +626,15 @@ class MainWindow(QMainWindow):
     def stop_video(self) -> None:
         if self.video_worker is None:
             return
+        self._video_stopping = True
+        self.video_label.reset_placeholder()
+        self.refresh_marker_status()
         self.video_status_label.setText("카메라를 끄는 중")
         self.video_worker.stop()
 
     def update_frame(self, image: QImage, stats: PracticeFrameStats) -> None:
+        if self.video_worker is None or self._video_stopping:
+            return
         self.video_label.set_current_image(image)
         self.latest_stable_grid = stats.stable_grid
         self.latest_edge_refinement = stats.edge_refinement
@@ -665,6 +672,7 @@ class MainWindow(QMainWindow):
     def on_video_worker_finished(self) -> None:
         self.camera_panel.set_running(False)
         self.video_worker = None
+        self._video_stopping = False
         self.selection_stage = "idle"
         self.selected_nut_line = None
         self.selected_middle_line = None
@@ -674,8 +682,7 @@ class MainWindow(QMainWindow):
         self.latest_stable_grid = None
         self.latest_edge_refinement = None
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
-        if self.video_label.pixmap() is None:
-            self.video_label.reset_placeholder()
+        self.video_label.reset_placeholder()
         self.video_status_label.setText("카메라 대기")
         self.refresh_marker_status()
         self.render_current_frame()
