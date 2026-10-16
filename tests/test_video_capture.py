@@ -44,7 +44,7 @@ class FakeCamera:
 @pytest.fixture
 def camera(monkeypatch):
     fake = FakeCamera()
-    monkeypatch.setattr('app.features.video_capture.cv2.VideoCapture', lambda _: fake)
+    monkeypatch.setattr('app.features.video_capture.open_camera', lambda _: fake)
     ticks = count(10)
     monkeypatch.setattr('app.features.video_capture.monotonic', lambda: float(next(ticks)))
     capture = LatestFrameCapture(0)
@@ -110,7 +110,7 @@ def test_read_failure_reaches_consumer_and_releases_device(camera, failure):
 
 def test_open_failure_reaches_consumer_and_releases_device(monkeypatch):
     fake = FakeCamera(opened=False)
-    monkeypatch.setattr('app.features.video_capture.cv2.VideoCapture', lambda _: fake)
+    monkeypatch.setattr('app.features.video_capture.open_camera', lambda _: fake)
     capture = LatestFrameCapture(7)
     capture.start()
     try:

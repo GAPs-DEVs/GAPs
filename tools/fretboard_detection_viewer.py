@@ -30,6 +30,9 @@ from PySide6.QtWidgets import (
 )
 from ultralytics import YOLO
 
+from vision.camera_capture import enumerate_camera_indices, open_camera
+from vision.line_selection import find_nearest_line, point_to_segment_distance
+
 from vision.camera_calibration import CameraCalibration, load_camera_calibration
 from vision.fretboard_edge_refinement import (
     EdgeRefinementResult,
@@ -172,39 +175,6 @@ def bgr_to_qimage(frame_bgr: np.ndarray) -> QImage:
         bytes_per_line,
         QImage.Format.Format_RGB888,
     ).copy()
-
-
-def point_to_segment_distance(
-    point_xy: tuple[float, float],
-    start_xy: tuple[float, float],
-    end_xy: tuple[float, float],
-) -> float:
-    point = np.asarray(point_xy, dtype=np.float32)
-    start = np.asarray(start_xy, dtype=np.float32)
-    end = np.asarray(end_xy, dtype=np.float32)
-    segment = end - start
-    length_sq = float(np.dot(segment, segment))
-    if length_sq <= 1e-6:
-        return float(np.linalg.norm(point - start))
-    ratio = float(np.dot(point - start, segment) / length_sq)
-    ratio = min(1.0, max(0.0, ratio))
-    projection = start + segment * ratio
-    return float(np.linalg.norm(point - projection))
-
-
-def find_nearest_line(
-    click_xy: tuple[float, float],
-    candidate_lines: tuple[DetectedLine, ...],
-    max_distance: float = SELECTION_MAX_DISTANCE,
-) -> DetectedLine | None:
-    nearest_line = None
-    nearest_distance = max_distance
-    for line in candidate_lines:
-        distance = point_to_segment_distance(click_xy, line.p0, line.p1)
-        if distance <= nearest_distance:
-            nearest_distance = distance
-            nearest_line = line
-    return nearest_line
 
 
 def find_nearest_fret_index(
@@ -899,20 +869,6 @@ def analyze_selected_lines_frame(
     return annotated, analysis
 
 
-def enumerate_camera_indices(max_index: int = 5) -> list[int]:
-    available: list[int] = []
-    for camera_index in range(max_index):
-        capture = cv2.VideoCapture(camera_index)
-        try:
-            if capture.isOpened():
-                ok, _ = capture.read()
-                if ok:
-                    available.append(camera_index)
-        finally:
-            capture.release()
-    return available
-
-
 class VideoWorker(QThread):
     frame_ready = Signal(QImage, object)
     error_message = Signal(str)
@@ -1047,7 +1003,7 @@ class VideoWorker(QThread):
             self.error_message.emit(str(exc))
             return
 
-        capture = cv2.VideoCapture(self.camera_index)
+        capture = open_camera(self.camera_index)
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 

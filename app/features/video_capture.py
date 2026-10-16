@@ -9,6 +9,8 @@ from time import monotonic
 import cv2
 import numpy as np
 
+from vision.camera_capture import open_camera
+
 
 @dataclass(frozen=True)
 class CapturedFrame:
@@ -66,7 +68,7 @@ class LatestFrameCapture:
     def _run(self) -> None:
         capture = None
         try:
-            capture = cv2.VideoCapture(self.camera_index)
+            capture = open_camera(self.camera_index)
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             if not capture.isOpened():

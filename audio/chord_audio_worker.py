@@ -7,10 +7,12 @@ import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
 from audio.polyphonic_detection import ExpectedFrequency, detect_expected_frequencies_cqt
+from audio.input_settings import select_input_sample_rate
 
 
 class ChordAudioWorker(QThread):
     result_ready = Signal(dict)
+    input_level_ready = Signal(float)
     error_message = Signal(str)
 
     def __init__(
@@ -60,12 +62,19 @@ class ChordAudioWorker(QThread):
 
         audio_blocks: Queue[np.ndarray] = Queue(maxsize=8)
         stream_status_message = ""
+        next_level_at = 0.0
 
         def audio_callback(indata, _frames, _time_info, status) -> None:
-            nonlocal stream_status_message
+            nonlocal stream_status_message, next_level_at
             if status:
                 stream_status_message = str(status)
             block = np.asarray(indata[:, 0], dtype=np.float32).copy()
+            # CQT 분석 창을 채우거나 첫 분석을 초기화하는 중에도 입력 미터는
+            # 실제 콜백의 소리 크기를 표시한다. UI 변경은 수신 측에서 처리한다.
+            now = perf_counter()
+            if block.size and now >= next_level_at:
+                self.input_level_ready.emit(float(np.sqrt(np.mean(np.square(block, dtype=np.float64)))))
+                next_level_at = now + 0.1
             try:
                 audio_blocks.put_nowait(block)
             except Full:
@@ -77,14 +86,16 @@ class ChordAudioWorker(QThread):
 
         self._running = True
         self.result_ready.emit(self._idle_result("listening"))
-        window_samples = max(1, int(self.sample_rate * self.analysis_window_ms / 1000.0))
         audio_buffer = np.asarray([], dtype=np.float32)
         last_correct_result: dict | None = None
         last_correct_at = 0.0
 
         try:
+            # 대체 샘플레이트를 사용하면 분석 창의 샘플 수도 함께 조정한다.
+            sample_rate = select_input_sample_rate(sd, self.sample_rate, self.device)
+            window_samples = max(1, int(sample_rate * self.analysis_window_ms / 1000.0))
             with sd.InputStream(
-                samplerate=self.sample_rate,
+                samplerate=sample_rate,
                 blocksize=self.block_size,
                 channels=1,
                 dtype="float32",
@@ -110,7 +121,7 @@ class ChordAudioWorker(QThread):
 
                     detection = detect_expected_frequencies_cqt(
                         audio_buffer,
-                        sample_rate=self.sample_rate,
+                        sample_rate=sample_rate,
                         expected_frequencies=self.expected_frequencies,
                         tolerance_cents=self.tolerance_cents,
                         silence_threshold=self.silence_threshold,
@@ -128,6 +139,8 @@ class ChordAudioWorker(QThread):
                         held_result["held"] = True
                         held_result["held_ms"] = int((now - last_correct_at) * 1000.0)
                         held_result["stream_status"] = stream_status_message
+                        held_result["rms"] = result["rms"]
+                        held_result["peak"] = result["peak"]
                         self.result_ready.emit(held_result)
                     else:
                         self.result_ready.emit(result)

@@ -8,10 +8,12 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from audio.music_math import cents_difference, is_within_tolerance
 from audio.pitch_detection import estimate_pitch
+from audio.input_settings import select_input_sample_rate
 
 
 class AudioWorker(QThread):
     result_ready = Signal(dict)
+    input_level_ready = Signal(float)
     error_message = Signal(str)
 
     def __init__(
@@ -65,12 +67,20 @@ class AudioWorker(QThread):
 
         audio_blocks: Queue[np.ndarray] = Queue(maxsize=3)
         stream_status_message = ""
+        next_level_at = 0.0
 
         def audio_callback(indata, _frames, _time_info, status) -> None:
-            nonlocal stream_status_message
+            nonlocal stream_status_message, next_level_at
             if status:
                 stream_status_message = str(status)
             block = np.asarray(indata[:, 0], dtype=np.float32).copy()
+            # 음정 분석 초기화·결과 유지와 무관하게 실제 입력을 전달한다.
+            # 콜백에서는 작은 RMS 계산과 Signal 전송만 하고 UI를 건드리지 않는다.
+            # 화면 이벤트가 쌓이지 않도록 초당 최대 10회만 전송한다.
+            now = perf_counter()
+            if block.size and now >= next_level_at:
+                self.input_level_ready.emit(float(np.sqrt(np.mean(np.square(block, dtype=np.float64)))))
+                next_level_at = now + 0.1
             try:
                 audio_blocks.put_nowait(block)
             except Full:
@@ -86,8 +96,10 @@ class AudioWorker(QThread):
         last_voiced_at = 0.0
 
         try:
+            # 스트림과 검출기에 같은 실제 샘플레이트를 전달해야 음정이 틀어지지 않는다.
+            sample_rate = select_input_sample_rate(sd, self.sample_rate, self.device)
             with sd.InputStream(
-                samplerate=self.sample_rate,
+                samplerate=sample_rate,
                 blocksize=self.block_size,
                 channels=1,
                 dtype="float32",
@@ -107,7 +119,7 @@ class AudioWorker(QThread):
 
                     detection = estimate_pitch(
                         block,
-                        sample_rate=self.sample_rate,
+                        sample_rate=sample_rate,
                         min_freq=self.min_freq,
                         max_freq=self.max_freq,
                         silence_threshold=self.silence_threshold,
@@ -132,6 +144,9 @@ class AudioWorker(QThread):
                         held_result["held"] = True
                         held_result["held_ms"] = int((now - last_voiced_at) * 1000.0)
                         held_result["stream_status"] = stream_status_message
+                        # 음정 표시를 잠깐 유지해도 입력 미터는 현재 소리 크기를 보여준다.
+                        held_result["rms"] = live_result["rms"]
+                        held_result["peak"] = live_result["peak"]
                         self.result_ready.emit(held_result)
                     else:
                         self.result_ready.emit(live_result)
