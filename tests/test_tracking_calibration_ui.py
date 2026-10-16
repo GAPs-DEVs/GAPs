@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -124,3 +125,140 @@ def test_calibration_fields_unlock_after_camera_stops(window):
     window.on_video_worker_finished()
     assert window.reference_fret_spin.isEnabled()
     assert window.tracking_panel.middle_fret_spin.isEnabled()
+
+
+def test_audio_error_message_is_not_replaced_by_empty_detection(window):
+    window._render_audio_result({'status': 'error', 'practice_mode': 'single',
+                                 'message': 'Microphone input failed: device unavailable'})
+    assert window.practice_status_label.text() == '오류'
+    assert 'device unavailable' in window.detected_label.text()
+
+
+def test_audio_level_distinguishes_input_from_matching_notes(window):
+    window.practice_running = True
+    window.audio_controller.input_level_ready.emit(0.003)
+    window._render_audio_result({'status': 'incorrect', 'rms': 0.003,
+                                 'matched_notes': [], 'missing_notes': ['1번줄 7프렛']})
+    assert window.practice_panel.input_level.value() > 0
+    assert window.practice_panel.input_level.format() == '입력 감지'
+    assert '목표음과 다름' in window.detected_label.text()
+    # 지연된 무음 분석 결과가 최신 콜백의 입력 미터를 0으로 되돌리면 안 된다.
+    window._render_audio_result({'status': 'no_signal', 'rms': 0.0})
+    assert window.practice_panel.input_level.value() > 0
+    window.audio_controller.input_level_ready.emit(0.0)
+    assert window.practice_panel.input_level.value() == 0
+
+
+def test_input_meter_updates_while_waiting_for_next_step(window):
+    window.practice_running = True
+    window._pending_advance_index = window.current_index
+    window.audio_controller.input_level_ready.emit(0.02)
+    assert window.practice_panel.input_level.value() > 0
+    window.stop_practice()
+    window.audio_controller.input_level_ready.emit(0.02)
+    assert window.practice_panel.input_level.value() == 0
+
+
+@pytest.mark.parametrize('mode', ['single', 'chord'])
+def test_input_meter_receives_thread_signal_before_analysis_finishes(window, monkeypatch, mode):
+    """실제 QThread 분석을 막아도 콜백→컨트롤러→화면의 입력 미터는 갱신된다."""
+    import sys
+    from threading import Event
+    from unittest.mock import MagicMock
+    import numpy as np
+    from audio import audio_worker, chord_audio_worker
+    from practice.score_steps import build_practice_steps
+
+    notes = [{'step': 1, 'string': 1, 'fret': 0}]
+    if mode == 'chord':
+        notes.append({'step': 1, 'string': 6, 'fret': 0})
+    window.practice_steps = build_practice_steps(notes)
+    sd = Mock()
+    sd.InputStream.return_value = MagicMock()
+    monkeypatch.setitem(sys.modules, 'sounddevice', sd)
+    entered, release = Event(), Event()
+
+    def feed():
+        worker = window.audio_controller.worker
+        callback = sd.InputStream.call_args.kwargs['callback']
+        block = np.full((worker.block_size, 1), 0.02, dtype=np.float32)
+        callback(block, len(block), None, None)
+        callback(block, len(block), None, None)
+
+    def analyze(*args, **kwargs):
+        entered.set()
+        release.wait(3)
+        window.audio_controller.worker._running = False
+        if mode == 'single':
+            return SimpleNamespace(frequency=None, rms=0., peak=0., clarity=0.)
+        return SimpleNamespace(matches=(), rms=0., peak=0., noise_floor_db=-120.,
+                               is_correct=False, status='no_signal', backend='librosa_cqt')
+
+    sd.InputStream.return_value.__enter__.side_effect = feed
+    module = audio_worker if mode == 'single' else chord_audio_worker
+    name = 'estimate_pitch' if mode == 'single' else 'detect_expected_frequencies_cqt'
+    monkeypatch.setattr(module, name, analyze)
+    try:
+        window.start_practice()
+        assert entered.wait(2)
+        QTest.qWait(50)
+        assert not release.is_set()
+        assert window.practice_panel.input_level.value() > 0
+        assert window.practice_panel.input_level.format() == '입력 감지'
+    finally:
+        # 컨트롤러가 worker 참조를 지우기 전에 분석 종료를 기다려 안전하게 정리한다.
+        worker = window.audio_controller.worker
+        release.set()
+        if worker is not None:
+            worker.wait(2000)
+        window.stop_practice()
+
+
+def test_selected_input_sensitivity_reaches_practice_worker(window):
+    window.audio_controller.start_for_step = Mock()
+    window.practice_panel.input_sensitivity_combo.setCurrentIndex(1)
+    window._start_audio_worker_for_current_step()
+    assert window.audio_controller.start_for_step.call_args.kwargs['silence_threshold'] == 0.0005
+
+
+def test_sensitivity_change_keeps_the_active_microphone_stream(window):
+    window.practice_running = True
+    window.audio_controller.worker = Mock()
+    worker = window.audio_controller.worker
+    window.practice_panel.input_sensitivity_combo.setCurrentIndex(1)
+    assert window.audio_controller.worker is worker
+    assert worker.silence_threshold == 0.0005
+    worker.stop.assert_not_called()
+    window.audio_controller.worker = None
+
+
+@pytest.mark.parametrize('device_available', [True, False])
+def test_microphone_refresh_reopens_stream_with_displayed_device(window, device_available):
+    """목록 갱신 후 실제 스트림도 선택 표시와 같은 장치로 복구해야 한다."""
+    window.microphone_combo.addItem('테스트 마이크', 18)
+    window.microphone_combo.setCurrentIndex(1)
+    window.audio_controller.start_for_step = Mock()
+    window.practice_running = True
+    window._pending_advance_index = window.current_index
+    window.interactive_advance_timer.start(10000)
+    devices = [('테스트 마이크', 18)] if device_available else []
+    with patch('app.ui.main_window.enumerate_audio_input_devices', return_value=devices):
+        window.refresh_microphone_button.click()
+    selected = 18 if device_available else None
+    assert window.current_microphone_device() == selected
+    window.audio_controller.start_for_step.assert_called_once_with(
+        window.current_step(), selected, silence_threshold=0.002,
+    )
+    assert window._pending_advance_index is None
+    assert not window.interactive_advance_timer.isActive()
+
+
+def test_microphone_refresh_does_not_start_audio_when_stopped_or_in_auto_mode(window):
+    """연습 중지·자동 흐름 상태에서는 목록만 갱신하고 마이크를 열지 않는다."""
+    window.audio_controller.start_for_step = Mock()
+    with patch('app.ui.main_window.enumerate_audio_input_devices', return_value=[]):
+        window.refresh_microphone_button.click()
+        window.mode_combo.setCurrentIndex(1)
+        window.practice_running = True
+        window.refresh_microphone_button.click()
+    window.audio_controller.start_for_step.assert_not_called()

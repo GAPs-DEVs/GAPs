@@ -7,6 +7,13 @@ def enumerate_audio_input_devices() -> list[tuple[str, int]]:
     except Exception:
         return []
 
+    # Windows에서는 같은 마이크가 여러 API에 중복 노출된다.
+    # 장치명만 표시하면 서로 구분할 수 없으므로 MME/WASAPI 등을 함께 표시한다.
+    try:
+        hostapis = sd.query_hostapis()
+    except Exception:
+        hostapis = []
+
     try:
         devices = sd.query_devices()
     except Exception:
@@ -23,6 +30,12 @@ def enumerate_audio_input_devices() -> list[tuple[str, int]]:
 
         if max_input_channels <= 0:
             continue
-        input_devices.append((f"{name} ({max_input_channels}ch)", index))
+        try:
+            host_index = int(device["hostapi"])
+        except (KeyError, TypeError):
+            host_index = -1
+        host_name = str(hostapis[host_index]["name"]) if 0 <= host_index < len(hostapis) else ""
+        prefix = f"[{host_name}] " if host_name else ""
+        input_devices.append((f"{prefix}{name} ({max_input_channels}ch)", index))
 
     return input_devices

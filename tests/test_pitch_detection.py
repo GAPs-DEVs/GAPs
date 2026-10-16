@@ -9,6 +9,18 @@ from audio.pitch_detection import estimate_pitch, estimate_pitch_autocorrelation
 
 
 class PitchDetectionTests(unittest.TestCase):
+    def test_weak_guitar_note_is_detected_with_practice_sensitivity(self) -> None:
+        # 낮은 마이크 입력에서도 음정·명료도 검증은 유지하고 무음 기준만 조정한다.
+        sample_rate = 44100
+        time = np.arange(8192, dtype=np.float32) / sample_rate
+        for frequency in (82.4069, 196.0):
+            with self.subTest(frequency=frequency):
+                samples = 0.0035 * np.sin(2 * np.pi * frequency * time)
+                self.assertIsNone(estimate_pitch(samples, sample_rate=sample_rate,
+                                               silence_threshold=0.006).frequency)
+                result = estimate_pitch(samples, sample_rate=sample_rate, silence_threshold=0.002)
+                self.assertAlmostEqual(result.frequency or 0, frequency, delta=2.0)
+
     def test_estimates_synthetic_g_string_pitch(self) -> None:
         sample_rate = 44100
         duration = 0.12

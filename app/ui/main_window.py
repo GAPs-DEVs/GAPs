@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
         self.audio_controller = PracticeAudioController(self)
         self.audio_controller.result_ready.connect(self._handle_audio_result)
         self.audio_controller.error_message.connect(self._handle_audio_error)
+        self.audio_controller.input_level_ready.connect(self._handle_input_level)
         self.retrigger_gate = RetriggerGate()
         self.current_index = 0
         self.practice_running = False
@@ -123,7 +124,8 @@ class MainWindow(QMainWindow):
         self.microphone_combo = self.practice_panel.microphone_combo
         self.microphone_combo.currentIndexChanged.connect(self.handle_microphone_change)
         self.refresh_microphone_button = self.practice_panel.refresh_microphone_button
-        self.refresh_microphone_button.clicked.connect(lambda: self.populate_microphone_list())
+        self.refresh_microphone_button.clicked.connect(self.refresh_microphone)
+        self.practice_panel.input_sensitivity_combo.currentIndexChanged.connect(self.handle_input_sensitivity_change)
         self.mode_combo = self.practice_panel.mode_combo
         self.mode_combo.currentIndexChanged.connect(self.handle_mode_change)
         self.auto_speed_slider = self.practice_panel.auto_speed_slider
@@ -906,7 +908,10 @@ class MainWindow(QMainWindow):
         step = self.current_step()
         microphone_device = self.current_microphone_device()
         self.practice_status_label.setText(STATUS_TEXT["listening"])
-        self.audio_controller.start_for_step(step, microphone_device)
+        self.audio_controller.start_for_step(
+            step, microphone_device,
+            silence_threshold=float(self.practice_panel.input_sensitivity_combo.currentData()),
+        )
 
     def _stop_audio_worker(self) -> None:
         self.audio_controller.stop()
@@ -923,12 +928,19 @@ class MainWindow(QMainWindow):
             self._schedule_interactive_advance()
 
     def _handle_audio_error(self, message: str) -> None:
+        self.practice_panel.set_audio_settings_visible(True)
         self.practice_status_label.setText(STATUS_TEXT["error"])
         self.detected_label.setText(message)
 
     def _render_audio_result(self, result: dict) -> None:
         status = str(result.get("status", "idle"))
         self.practice_status_label.setText(STATUS_TEXT.get(status, status))
+        if status == "error":
+            # 워커가 오류 신호 뒤에 보내는 결과도 메시지를 보존해야 한다.
+            # 기존 일반 결과 처리로 내려가면 실제 오류가 '-'로 덮어써졌다.
+            self.detected_label.setText(str(result.get("message") or "마이크 입력 오류"))
+            self.missing_label.setText("-")
+            return
 
         if result.get("practice_mode") == "single":
             detected_frequency = result.get("detected_frequency")
@@ -944,7 +956,10 @@ class MainWindow(QMainWindow):
 
         matched_notes = result.get("matched_notes") or []
         missing_notes = result.get("missing_notes") or []
-        self.detected_label.setText(", ".join(matched_notes) if matched_notes else "-")
+        # 목표 화음과 다른 소리도 입력 자체는 있을 수 있다. '-'만 표시하면
+        # 마이크가 작동하지 않는 것처럼 보이므로 판정 실패와 무입력을 구분한다.
+        unmatched = "입력 감지 · 목표음과 다름" if status == "incorrect" else "-"
+        self.detected_label.setText(", ".join(matched_notes) if matched_notes else unmatched)
         self.missing_label.setText(", ".join(missing_notes) if missing_notes else "-")
 
     def _schedule_interactive_advance(self) -> None:
@@ -975,3 +990,24 @@ class MainWindow(QMainWindow):
         self.stop_practice()
         self.stop_video()
         super().closeEvent(event)
+
+    def _handle_input_level(self, rms: float) -> None:
+        # 정답 후 진행 대기 중에도 미터를 갱신한다. 음정 분석 결과에 포함된
+        # 과거 RMS로 현재 입력을 덮어쓰지 않도록 표시 경로를 분리한다.
+        if self.practice_running and self.current_mode() == "interactive":
+            self.practice_panel.set_input_level(rms)
+
+    def handle_input_sensitivity_change(self, _index: int) -> None:
+        # 워커가 매 분석 때 읽는 값을 바꾼다. 감도 변경만으로 장치를 다시 열거나
+        # 진행 중인 음정 분석 스레드를 교체할 필요는 없다.
+        if self.practice_running and self.current_mode() == "interactive":
+            self.audio_controller.set_silence_threshold(float(self.practice_panel.input_sensitivity_combo.currentData()))
+
+    def refresh_microphone(self) -> None:
+        # 목록을 채우는 동안에는 선택 변경 신호가 차단된다. 따라서 목록만
+        # 갱신하면 오류가 난 스트림이나 사라진 장치의 스트림이 그대로 남는다.
+        # 같은 장치를 다시 골랐더라도 사용자가 새로고침을 누른 경우에는
+        # 현재 표시된 장치로 재연결한다. 중지·자동 흐름 모드는 기존 핸들러가
+        # 걸러 주므로 불필요하게 마이크를 열지 않는다.
+        self.populate_microphone_list()
+        self.handle_microphone_change()
