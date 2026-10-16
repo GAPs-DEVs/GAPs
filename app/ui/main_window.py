@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.current_index = 0
         self.practice_running = False
         self.selection_stage = "idle"
+        self._selection_hint_state = None
         self.selected_nut_line: DetectedLine | None = None
         self.selected_middle_line: DetectedLine | None = None
         self.selected_reference_line: DetectedLine | None = None
@@ -118,6 +119,7 @@ class MainWindow(QMainWindow):
         self.clear_tracking_button = self.tracking_panel.clear_tracking_button
         self.select_lines_button.clicked.connect(self.begin_line_selection)
         self.clear_tracking_button.clicked.connect(self.clear_manual_tracking)
+        self.tracking_panel.manual_points_checkbox.toggled.connect(self.handle_manual_selection_change)
 
         self.practice_panel = PracticePanel()
         self.microphone_combo = self.practice_panel.microphone_combo
@@ -614,6 +616,7 @@ class MainWindow(QMainWindow):
         self.video_worker.finished.connect(self.on_video_worker_finished)
         self.camera_panel.set_running(True)
         self.selection_stage = "idle"
+        self.tracking_panel.hint_label.setText(TrackingPanel.READY_HINT)
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
         self.video_status_label.setText("카메라 실행 중")
         self.video_worker.start()
@@ -637,6 +640,7 @@ class MainWindow(QMainWindow):
                 self.video_status_label.setText("먼저 기준 프렛 번호를 지정하고 지판 맞추기를 눌러주세요.")
             elif stats.tracking_mode in {"selected_lines_tracking", "selected_lines_reacquired"}:
                 self.video_status_label.setText("지판 맞춤 완료")
+                self.tracking_panel.hint_label.setText("지판 맞춤 완료 · 연습을 시작하세요.")
             elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity"}:
                 self.video_status_label.setText("지판 움직임 추적 중")
             elif stats.tracking_mode == "selected_lines_hold":
@@ -663,7 +667,10 @@ class MainWindow(QMainWindow):
         self.video_worker = None
         self.selection_stage = "idle"
         self.selected_nut_line = None
+        self.selected_middle_line = None
         self.selected_reference_line = None
+        self.selection_points = []
+        self.tracking_panel.hint_label.setText(TrackingPanel.READY_HINT)
         self.latest_stable_grid = None
         self.latest_edge_refinement = None
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
@@ -688,10 +695,9 @@ class MainWindow(QMainWindow):
             self.practice_tab_strip.set_data([])
 
     def begin_line_selection(self) -> None:
-        middle = self.tracking_panel.middle_fret_spin.value()
-        last = self.reference_fret_spin.value()
-        if not 0 < middle < last:
-            self.video_status_label.setText("중간·끝 기준 프렛 번호를 입력해주세요. 중간 번호는 끝 번호보다 작아야 합니다.")
+        if self.selection_stage != "idle":
+            return
+        if not self.tracking_panel.commit_and_validate():
             return
         if self.video_worker is None or not self.video_worker.isRunning():
             QMessageBox.information(self, "카메라 필요", "카메라를 먼저 시작해주세요.")
@@ -713,11 +719,27 @@ class MainWindow(QMainWindow):
     def clear_manual_tracking(self) -> None:
         self.selection_stage = "idle"
         self.selected_nut_line = None
+        self.selected_middle_line = None
         self.selected_reference_line = None
+        self.selection_points = []
+        self.tracking_panel.clear_errors()
+        self.tracking_panel.hint_label.setText(TrackingPanel.READY_HINT)
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
         if self.video_worker is not None:
             self.video_worker.clear_manual_tracking()
-        self.video_status_label.setText("카메라 실행 중")
+        self.video_status_label.setText("카메라 실행 중" if self.video_worker is not None else "카메라 대기")
+        self.render_current_frame()
+
+    def handle_manual_selection_change(self, checked: bool) -> None:
+        self.manual_point_selection = checked
+        if self.selection_stage in {"select_nut", "select_middle", "select_fret"}:
+            # Reuse the frozen frame, but never mix detected lines with a
+            # partially collected six-point calibration.
+            self.selection_stage = "select_nut"
+            self.selected_nut_line = None
+            self.selected_middle_line = None
+            self.selected_reference_line = None
+            self.selection_points = []
         self.render_current_frame()
 
     def map_label_click_to_image(self, label_x: float, label_y: float) -> tuple[float, float] | None:
@@ -741,6 +763,7 @@ class MainWindow(QMainWindow):
                 self.selection_points = self.selection_points[:-2]
                 self.video_status_label.setText("선의 양 끝점을 충분히 떨어뜨려 지정해주세요.")
                 self.render_current_frame()
+                self.tracking_panel.hint_label.setText("양 끝점을 충분히 떨어뜨려 다시 지정해주세요.")
                 return
             kind = "nut" if self.selection_stage == "select_nut" else "fret"
             selected_line = DetectedLine(kind, first, second, 1.0)
@@ -749,7 +772,9 @@ class MainWindow(QMainWindow):
             candidates = tuple(line for line in self.video_worker.frozen_selection_lines if line.kind == kind)
             selected_line = find_nearest_line(image_point, candidates)
             if selected_line is None:
-                self.video_status_label.setText("선에 더 가깝게 클릭하거나, 양 끝점 직접 지정을 사용해주세요.")
+                message = "선을 가까이 클릭하거나 ‘수동으로 양 끝점 지정’을 선택하세요."
+                self.video_status_label.setText(message)
+                self.tracking_panel.hint_label.setText(message)
                 return
 
         if self.selection_stage == "select_nut":
@@ -778,17 +803,25 @@ class MainWindow(QMainWindow):
                     self.selected_reference_line = None
                     self.video_status_label.setText(str(error))
                     self.render_current_frame()
+                    self.tracking_panel.hint_label.setText(f"중간 프렛을 다시 선택하세요. {error}")
                     return
                 self.video_worker.apply_calibrated_selection(grid, self.reference_fret_spin.value())
             self.selection_stage = "idle"
             self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
             self.video_status_label.setText("지판 맞춤을 적용하는 중입니다.")
+            self.tracking_panel.hint_label.setText("지판 맞춤을 적용하는 중입니다.")
 
         self.render_current_frame()
 
     def render_current_frame(self) -> None:
         self.reference_fret_spin.setEnabled(self.selection_stage == "idle")
         self.tracking_panel.middle_fret_spin.setEnabled(self.selection_stage == "idle")
+        self.select_lines_button.setEnabled(self.selection_stage == "idle")
+        hint_state = (self.selection_stage, self.manual_point_selection, len(self.selection_points),
+                      self.tracking_panel.middle_fret_spin.value(), self.reference_fret_spin.value())
+        if hint_state != self._selection_hint_state:
+            self._selection_hint_state = hint_state
+            self.refresh_selection_hint()
         self.video_label.render_frame(
             selection_stage=self.selection_stage,
             selected_nut_line=self.selected_nut_line,
@@ -798,6 +831,27 @@ class MainWindow(QMainWindow):
             reference_fret_index=int(self.tracking_panel.middle_fret_spin.value()
                                      if self.selection_stage == "select_middle" else self.reference_fret_spin.value()),
         )
+
+    def refresh_selection_hint(self) -> None:
+        if self.selection_stage == "await_frame":
+            self.tracking_panel.hint_label.setText("지판 맞춤을 준비하고 있습니다.")
+        elif self.selection_stage in {"select_nut", "select_middle", "select_fret"}:
+            step, target = {
+                "select_nut": (1, "너트"),
+                "select_middle": (2, f"중간 {self.tracking_panel.middle_fret_spin.value()}프렛"),
+                "select_fret": (3, f"끝 {self.reference_fret_spin.value()}프렛"),
+            }[self.selection_stage]
+            action = "선을 선택하세요."
+            if self.manual_point_selection:
+                endpoint = "첫 번째" if len(self.selection_points) % 2 == 0 else "반대쪽"
+                action = f"{endpoint} 끝점을 선택하세요."
+            self.tracking_panel.hint_label.setText(f"{step}/3 · {target} {action}")
+            if not self.manual_point_selection and self.video_worker is not None:
+                kind = "nut" if self.selection_stage == "select_nut" else "fret"
+                if not any(line.kind == kind for line in self.video_worker.frozen_selection_lines):
+                    self.tracking_panel.hint_label.setText(f"{step}/3 · {target} 선이 인식되지 않았습니다. ‘수동으로 양 끝점 지정’을 선택하세요.")
+        if self.selection_stage != "idle":
+            self.video_status_label.setText(self.tracking_panel.hint_label.text())
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
