@@ -177,6 +177,9 @@ class PracticeVideoWorker(QThread):
         self.note_marker_tracker.clear()
         self.string_line_tracker.clear()
         self.selection_request = True
+        # 정지 화면에서 다시 누른 경우에도 다음 프레임을 읽게 해야 한다.
+        # 이 플래그가 남아 있으면 _run_frames가 계속 대기하여 재검출하지 않는다.
+        self.selection_active = False
         return True
 
     def cancel_line_selection(self) -> None:
@@ -413,9 +416,8 @@ class PracticeVideoWorker(QThread):
         )
 
     def _analyze_yolo_assist_frame(self, model, frame_bgr) -> tuple[object, PracticeFrameAnalysis]:
-        # Fret identity and the camera reference are established explicitly once.
-        # Rendering the old uncalibrated edge grid here would bypass the verified
-        # tracking path and recreate the same wrong-fret/hand-warp failures.
+        # 일반 화면에서는 검출선을 표시하지 않는다. 모델 검출과 선 표시는
+        # _analyze_selection_frame에서만 수행하고, 보정 후에는 검증된 점만 그린다.
         self.note_marker_tracker.clear()
         hand_tracking = self._process_hand_tracking(frame_bgr, ())
         return frame_bgr.copy(), PracticeFrameAnalysis(

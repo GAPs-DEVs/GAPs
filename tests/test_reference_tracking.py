@@ -121,5 +121,31 @@ def test_camera_preview_requires_calibration_before_showing_absolute_fret_guides
     annotated, analysis = worker._analyze_yolo_assist_frame(model, frame)
     assert analysis.tracking_mode == 'calibration_required'
     assert analysis.note_markers == () and analysis.stable_grid is None
+    assert analysis.detected_lines == () and analysis.class_counts == {}
     np.testing.assert_array_equal(annotated, frame)
     model.predict.assert_not_called()
+
+
+def test_selection_frame_shows_lines_without_absolute_note_guides(monkeypatch):
+    frame, grid = scene()
+    worker = PracticeVideoWorker(Path('unused.pt'), 0, .25, 960, None, False, False, False)
+    lines = (grid.nut_line, *grid.ordered_fret_lines)
+    detector = Mock(return_value=lines)
+    monkeypatch.setattr('app.features.video.predict_detected_lines', detector)
+    annotated, analysis = worker._analyze_selection_frame(Mock(), frame)
+    assert analysis.tracking_mode == 'selection_ready'
+    assert analysis.detected_lines == lines
+    assert analysis.note_markers == ()
+    assert np.any(annotated != frame)
+    detector.assert_called_once()
+
+
+def test_retry_calibration_unfreezes_capture_for_a_new_detection_frame():
+    frame, grid = scene()
+    worker = PracticeVideoWorker(Path('unused.pt'), 0, .25, 960, None, False, False, False)
+    worker.latest_frame_bgr = frame
+    worker.selection_active = True
+    worker.frozen_selection_lines = (grid.nut_line,)
+    assert worker.begin_line_selection()
+    assert worker.selection_request
+    assert not worker.selection_active

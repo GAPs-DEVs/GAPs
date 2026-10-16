@@ -7,7 +7,7 @@ from types import SimpleNamespace
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QSpinBox
 from PySide6.QtGui import QImage
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -72,6 +72,24 @@ def test_six_point_calibration_works_without_any_detected_lines(window):
     assert window.selection_stage == 'idle'
 
 
+@pytest.mark.parametrize('width', [1024, 1280, 1456])
+def test_practice_controls_fit_sidebar_at_different_window_widths(window, width):
+    # 긴 Windows 장치명이 있어도 입력칸·버튼이 고정 사이드바 밖으로 밀리지 않아야 한다.
+    window.microphone_combo.addItem('Long microphone device name ' * 8, 99)
+    window.microphone_combo.setCurrentIndex(window.microphone_combo.count() - 1)
+    window.stacked_widget.setCurrentWidget(window.practice_root)
+    window.resize(width, 800)
+    window.show()
+    QApplication.processEvents()
+    assert window.width() == width
+    for panel in (window.camera_panel, window.tracking_panel, window.practice_panel):
+        assert panel.minimumSizeHint().width() <= panel.width()
+        for widget_type in (QComboBox, QPushButton, QSpinBox):
+            for control in panel.findChildren(widget_type):
+                if control.isVisible():
+                    assert panel.rect().contains(control.geometry()), control.objectName()
+
+
 def test_near_duplicate_endpoint_click_is_rejected(window):
     window.manual_point_selection = True
     window.handle_video_click(80, 50)
@@ -125,6 +143,50 @@ def test_calibration_fields_unlock_after_camera_stops(window):
     window.on_video_worker_finished()
     assert window.reference_fret_spin.isEnabled()
     assert window.tracking_panel.middle_fret_spin.isEnabled()
+
+
+def test_manual_checkbox_takes_effect_while_frozen_selection_is_active(window):
+    # 사용자가 검출 실패 뒤 체크했을 때 내부 선택 모드도 즉시 바뀌어야 한다.
+    window.tracking_panel.manual_points_checkbox.setChecked(True)
+    assert window.manual_point_selection
+    for point in ((80, 50), (180, 50), (80, 170), (180, 170), (80, 310), (180, 310)):
+        window.handle_video_click(*point)
+    window.video_worker.apply_calibrated_selection.assert_called_once()
+    assert window.selection_stage == 'idle'
+
+
+def test_changing_selection_mode_discards_partial_automatic_selection(window):
+    window.selection_stage = 'select_middle'
+    window.selected_nut_line = DetectedLine('nut', (80, 50), (180, 50), 1)
+    window.tracking_panel.manual_points_checkbox.setChecked(True)
+    assert window.selection_stage == 'select_nut'
+    assert window.selected_nut_line is None
+    assert window.selection_points == []
+
+
+@pytest.mark.parametrize('lines', [(), (DetectedLine('fret', (80, 170), (180, 170), 1),)])
+def test_missing_detected_lines_enable_manual_endpoints_on_same_frame(window, lines):
+    window.selection_stage = 'await_frame'
+    window.video_worker.frozen_selection_lines = lines
+    stats = SimpleNamespace(tracking_mode='selection_ready', stable_grid=None,
+                            edge_refinement=None, marker_count=0, total_detections=len(lines))
+    window.update_frame(window.video_label.current_image, stats)
+    assert window.manual_point_selection
+    assert window.tracking_panel.manual_points_checkbox.isChecked()
+    assert window.selection_stage == 'select_nut'
+    assert '양 끝점' in window.video_status_label.text()
+
+
+def test_invalid_number_message_survives_next_camera_frame(window):
+    window.selection_stage = 'idle'
+    window._last_tracking_mode = 'calibration_required'
+    window.reference_fret_spin.setValue(0)
+    window.begin_line_selection()
+    message = window.video_status_label.text()
+    stats = SimpleNamespace(tracking_mode='calibration_required', stable_grid=None,
+                            edge_refinement=None, marker_count=0, total_detections=0)
+    window.update_frame(window.video_label.current_image, stats)
+    assert window.video_status_label.text() == message
 
 
 def test_audio_error_message_is_not_replaced_by_empty_detection(window):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QLabel
+from PySide6.QtWidgets import QLabel, QSizePolicy
 
 from vision.fretboard_mapping import DetectedLine
 
@@ -15,7 +15,11 @@ class VideoSurface(QLabel):
         self.placeholder_text = placeholder_text
         self.current_image: QImage | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(960, 540)
+        self.setWordWrap(True)
+        # 영상 해상도와 위젯의 최소 크기를 분리한다. 큰 pixmap의 sizeHint도
+        # 레이아웃을 밀어내지 않도록 무시하고 실제 표시 영역에 맞춰 축소한다.
+        self.setMinimumSize(480, 270)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setStyleSheet(
             "background-color: #101418; color: #e8eef2; border: 1px solid #24303a; font-size: 20px;"
         )

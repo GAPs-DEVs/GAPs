@@ -10,6 +10,10 @@ from PySide6.QtWidgets import QHBoxLayout, QFrame, QScrollArea, QMainWindow, QMe
 
 from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH
 from app.features.audio_devices import enumerate_audio_input_devices
+from app.features.fretboard_selection import (
+    CalibrationSelection, SELECTION_STAGES, advance_selection,
+    requires_manual_selection, valid_reference_frets,
+)
 from app.features.practice_audio import PracticeAudioController, RetriggerGate, with_step_context
 from app.features.video import PracticeFrameStats, PracticeVideoWorker
 from app.ui.camera_panel import CameraPanel
@@ -22,14 +26,13 @@ from practice.score_steps import (
     build_practice_steps_from_json,
     load_parsed_notes_from_json,
 )
-from tools.fretboard_detection_viewer import enumerate_camera_indices, find_nearest_line
+from vision.camera_capture import enumerate_camera_indices
 from vision.camera_calibration import CameraCalibration
 from vision.fretboard_edge_refinement import EdgeRefinementResult
 from vision.fretboard_mapping import (
     DetectedLine,
     StableFretboardGrid,
 )
-from vision.fretboard_calibration import build_calibrated_grid
 
 from app.pages.select_page import SelectPage
 from app.pages.admin_page import AdminPage
@@ -77,6 +80,7 @@ class MainWindow(QMainWindow):
         self.current_index = 0
         self.practice_running = False
         self.selection_stage = "idle"
+        self._last_tracking_mode: str | None = None
         self.selected_nut_line: DetectedLine | None = None
         self.selected_middle_line: DetectedLine | None = None
         self.selected_reference_line: DetectedLine | None = None
@@ -119,6 +123,7 @@ class MainWindow(QMainWindow):
         self.clear_tracking_button = self.tracking_panel.clear_tracking_button
         self.select_lines_button.clicked.connect(self.begin_line_selection)
         self.clear_tracking_button.clicked.connect(self.clear_manual_tracking)
+        self.tracking_panel.manual_points_checkbox.toggled.connect(self.handle_manual_points_toggle)
 
         self.practice_panel = PracticePanel()
         self.microphone_combo = self.practice_panel.microphone_combo
@@ -163,7 +168,6 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setStyleSheet("""
             QWidget {
-                font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
                 background-color: #f8f9fa;
                 color: #212529;
             }
@@ -195,7 +199,7 @@ class MainWindow(QMainWindow):
             }
 
             /* 콤보박스 및 입력 위젯 */
-            QComboBox {
+            QComboBox, QSpinBox {
                 background-color: #ffffff;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
@@ -241,6 +245,18 @@ class MainWindow(QMainWindow):
                 color: #374151;
                 spacing: 6px;
             }
+            /* 기본 OS 테마와 배경색이 달라도 체크 영역을 구분할 수 있게 한다. */
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid #9ca3af;
+                border-radius: 3px;
+                background-color: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #2563eb;
+                border-color: #2563eb;
+            }
 
             /* 패널 기본 버튼 (이전, 다음, 처음, 새로고침 등) */
             QGroupBox QPushButton {
@@ -269,14 +285,14 @@ class MainWindow(QMainWindow):
         """)
 
         root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(20, 20, 20, 20)
+        root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(16)
 
         # 좌측 비디오 + 타브 악보 카드 래퍼
         video_card = QFrame()
         video_card.setObjectName("video_card")
         video_column_layout = QVBoxLayout(video_card)
-        video_column_layout.setContentsMargins(16, 16, 16, 16)
+        video_column_layout.setContentsMargins(12, 12, 12, 12)
         video_column_layout.setSpacing(12)
         video_column_layout.addWidget(self.video_label, stretch=1)
         video_column_layout.addWidget(self.practice_tab_strip)
@@ -310,7 +326,9 @@ class MainWindow(QMainWindow):
             print(f"Index [{i}]: {widget.__class__.__name__} (메모리 주소: {id(widget)})")
         print("=================================================================\n")
 
-        self.populate_camera_list(selected=camera_index)
+        # 앱 시작 시 장치를 차례로 열면 macOS 권한 요청과 Windows 장치 대기로
+        # 첫 화면이 늦어진다. 실제 검색은 사용자가 새로고침을 눌렀을 때 한다.
+        self.populate_camera_list(selected=camera_index, scan=False)
         self.populate_microphone_list()
         self.refresh_practice_tab_data()
         self.retrigger_gate.configure(None, self.current_step())
@@ -518,13 +536,13 @@ class MainWindow(QMainWindow):
     def current_microphone_device(self) -> int | str | None:
         return self.microphone_combo.currentData()
 
-    def populate_camera_list(self, selected: int | None = None) -> None:
+    def populate_camera_list(self, selected: int | None = None, scan: bool = True) -> None:
         current_selection = selected
         if current_selection is None and self.camera_combo.currentData() is not None:
             current_selection = int(self.camera_combo.currentData())
 
         self.camera_combo.clear()
-        available_cameras = enumerate_camera_indices()
+        available_cameras = enumerate_camera_indices() if scan else [current_selection or 0]
         if not available_cameras:
             available_cameras = [0]
 
@@ -554,6 +572,15 @@ class MainWindow(QMainWindow):
                         break
         finally:
             self.microphone_combo.blockSignals(False)
+
+    def refresh_microphone(self) -> None:
+        # 목록을 채우는 동안에는 선택 변경 신호가 차단된다. 따라서 목록만
+        # 갱신하면 오류가 난 스트림이나 사라진 장치의 스트림이 그대로 남는다.
+        # 같은 장치를 다시 골랐더라도 사용자가 새로고침을 누른 경우에는
+        # 현재 표시된 장치로 재연결한다. 중지·자동 흐름 모드는 기존 핸들러가
+        # 걸러 주므로 불필요하게 마이크를 열지 않는다.
+        self.populate_microphone_list()
+        self.handle_microphone_change()
 
     def handle_reverse_change(self, _: int) -> None:
         if self.video_worker is not None:
@@ -618,6 +645,7 @@ class MainWindow(QMainWindow):
         self.selection_stage = "idle"
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
         self.video_status_label.setText("카메라 실행 중")
+        self._last_tracking_mode = None
         self.video_worker.start()
 
     def stop_video(self) -> None:
@@ -633,10 +661,20 @@ class MainWindow(QMainWindow):
 
         if stats.tracking_mode == "selection_ready" and self.selection_stage == "await_frame":
             self.selection_stage = "select_nut"
-            self.video_status_label.setText("화면에서 너트 선을 클릭하세요.")
+            # 너트 또는 최소 두 프렛이 없으면 자동선 클릭을 완료할 수 없다.
+            # 빈 화면에서 클릭을 계속 요구하지 않고 같은 정지 화면의 여섯 점
+            # 선택으로 전환한다. 모델이 만든 선으로 프렛 번호를 추측하지 않는다.
+            lines = self.video_worker.frozen_selection_lines if self.video_worker is not None else ()
+            if requires_manual_selection(lines) and not self.manual_point_selection:
+                self.tracking_panel.manual_points_checkbox.setChecked(True)
+                self.video_status_label.setText("검출선이 부족합니다. 너트의 양 끝점부터 직접 지정해주세요.")
+            else:
+                self.update_selection_prompt()
         elif self.selection_stage == "idle":
             if stats.tracking_mode == "calibration_required":
-                self.video_status_label.setText("먼저 기준 프렛 번호를 지정하고 지판 맞추기를 눌러주세요.")
+                # 번호 오류 안내를 매 프레임 기본 문구로 덮어쓰지 않는다.
+                if self._last_tracking_mode != "calibration_required":
+                    self.video_status_label.setText("중간·끝 프렛 번호 입력 → 지판 맞추기 → 너트·중간·끝 선택")
             elif stats.tracking_mode in {"selected_lines_tracking", "selected_lines_reacquired"}:
                 self.video_status_label.setText("지판 맞춤 완료")
             elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity"}:
@@ -652,8 +690,12 @@ class MainWindow(QMainWindow):
             if stats.tracking_mode.startswith("selected_lines_") and not stats.hand_mask_available:
                 self.video_status_label.setText(self.video_status_label.text() + " · 손 가림 감지 비활성")
 
+        self._last_tracking_mode = stats.tracking_mode
         self.render_current_frame()
-        self.marker_status_label.setText(f"가이드 점 {stats.marker_count}개")
+        if stats.tracking_mode == "selection_ready":
+            self.marker_status_label.setText(f"검출선 {stats.total_detections}개 · 지판 맞춤 후 안내점 표시")
+        else:
+            self.marker_status_label.setText(f"가이드 점 {stats.marker_count}개")
 
     def handle_video_error(self, message: str) -> None:
         QMessageBox.warning(self, "카메라 오류", message)
@@ -664,6 +706,7 @@ class MainWindow(QMainWindow):
         self.camera_panel.set_running(False)
         self.video_worker = None
         self.selection_stage = "idle"
+        self._last_tracking_mode = None
         self.selected_nut_line = None
         self.selected_reference_line = None
         self.latest_stable_grid = None
@@ -690,9 +733,14 @@ class MainWindow(QMainWindow):
             self.practice_tab_strip.set_data([])
 
     def begin_line_selection(self) -> None:
+        # 버튼이나 키보드로 시작해도 편집 중인 숫자를 먼저 값에 반영한다.
+        self.tracking_panel.middle_fret_spin.interpretText()
+        self.reference_fret_spin.interpretText()
         middle = self.tracking_panel.middle_fret_spin.value()
         last = self.reference_fret_spin.value()
-        if not 0 < middle < last:
+        if not valid_reference_frets(middle, last):
+            self.tracking_panel.set_settings_visible(True)
+            self.tracking_panel.middle_fret_spin.setFocus()
             self.video_status_label.setText("중간·끝 기준 프렛 번호를 입력해주세요. 중간 번호는 끝 번호보다 작아야 합니다.")
             return
         if self.video_worker is None or not self.video_worker.isRunning():
@@ -702,6 +750,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "준비 중", "카메라 화면이 아직 준비되지 않았습니다.")
             return
 
+        self.tracking_panel.set_settings_visible(False)
         self.selection_stage = "await_frame"
         self.manual_point_selection = self.tracking_panel.manual_points_checkbox.isChecked()
         self.selection_points = []
@@ -712,10 +761,41 @@ class MainWindow(QMainWindow):
         self.video_status_label.setText("지판 맞춤을 준비하는 중입니다.")
         self.render_current_frame()
 
+    def handle_manual_points_toggle(self, checked: bool) -> None:
+        """정지 화면에서도 수동 선택 전환을 즉시 반영한다.
+
+        자동 검출선과 사용자가 찍은 끝점을 섞어 보정하지 않도록 진행 중이면
+        너트부터 다시 선택한다. 카메라와 정지 화면 자체는 유지한다.
+        """
+        self.manual_point_selection = checked
+        if checked:
+            self.tracking_panel.set_settings_visible(True)
+        if self.selection_stage not in SELECTION_STAGES:
+            return
+        self.selection_stage = "select_nut"
+        self.selection_points = []
+        self.selected_nut_line = None
+        self.selected_middle_line = None
+        self.selected_reference_line = None
+        self.update_selection_prompt()
+        self.render_current_frame()
+
+    def update_selection_prompt(self) -> None:
+        name = {
+            "select_nut": "너트",
+            "select_middle": f"실제 {self.tracking_panel.middle_fret_spin.value()}프렛",
+            "select_fret": f"실제 {self.reference_fret_spin.value()}프렛",
+        }.get(self.selection_stage)
+        if name is not None:
+            action = "양 끝점을 클릭하세요." if self.manual_point_selection else "금속선을 클릭하세요."
+            self.video_status_label.setText(f"{name}의 {action}")
+
     def clear_manual_tracking(self) -> None:
         self.selection_stage = "idle"
         self.selected_nut_line = None
+        self.selected_middle_line = None
         self.selected_reference_line = None
+        self.selection_points = []
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
         if self.video_worker is not None:
             self.video_worker.clear_manual_tracking()
@@ -726,65 +806,35 @@ class MainWindow(QMainWindow):
         return self.video_label.map_label_point_to_image(label_x, label_y)
 
     def handle_video_click(self, label_x: float, label_y: float) -> None:
-        if self.selection_stage not in {"select_nut", "select_middle", "select_fret"} or self.video_worker is None:
+        if self.selection_stage not in SELECTION_STAGES or self.video_worker is None:
             return
 
         image_point = self.map_label_click_to_image(label_x, label_y)
         if image_point is None:
             return
 
-        if self.manual_point_selection:
-            self.selection_points.append(image_point)
-            if len(self.selection_points) % 2:
-                self.render_current_frame()
-                return
-            first, second = self.selection_points[-2:]
-            if (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2 < 64:
-                self.selection_points = self.selection_points[:-2]
-                self.video_status_label.setText("선의 양 끝점을 충분히 떨어뜨려 지정해주세요.")
-                self.render_current_frame()
-                return
-            kind = "nut" if self.selection_stage == "select_nut" else "fret"
-            selected_line = DetectedLine(kind, first, second, 1.0)
-        else:
-            kind = "nut" if self.selection_stage == "select_nut" else "fret"
-            candidates = tuple(line for line in self.video_worker.frozen_selection_lines if line.kind == kind)
-            selected_line = find_nearest_line(image_point, candidates)
-            if selected_line is None:
-                self.video_status_label.setText("선에 더 가깝게 클릭하거나, 양 끝점 직접 지정을 사용해주세요.")
-                return
-
-        if self.selection_stage == "select_nut":
-            self.selected_nut_line = selected_line
-            self.selection_stage = "select_middle"
-            self.video_status_label.setText(f"실제 {self.tracking_panel.middle_fret_spin.value()}프렛의 금속선을 클릭하세요.")
-        elif self.selection_stage == "select_middle":
-            self.selected_middle_line = selected_line
-            self.selected_reference_line = selected_line
-            self.selection_stage = "select_fret"
-            self.video_status_label.setText(f"실제 {self.reference_fret_spin.value()}프렛의 금속선을 클릭하세요.")
-        else:
-            self.selected_reference_line = selected_line
-            if self.selected_nut_line is not None:
-                try:
-                    grid = build_calibrated_grid(
-                        self.selected_nut_line, self.selected_middle_line,
-                        self.tracking_panel.middle_fret_spin.value(), selected_line,
-                        self.reference_fret_spin.value(),
-                    )
-                except ValueError as error:
-                    if self.manual_point_selection:
-                        self.selection_points = self.selection_points[:2]
-                    self.selection_stage = "select_middle"
-                    self.selected_middle_line = None
-                    self.selected_reference_line = None
-                    self.video_status_label.setText(str(error))
-                    self.render_current_frame()
-                    return
-                self.video_worker.apply_calibrated_selection(grid, self.reference_fret_spin.value())
-            self.selection_stage = "idle"
+        # 위젯에서 얻은 입력을 기능 계층에 전달하고, 반환된 상태만 화면에 반영한다.
+        selection = CalibrationSelection(
+            stage=self.selection_stage, manual=self.manual_point_selection,
+            nut=self.selected_nut_line, middle=self.selected_middle_line,
+            reference=self.selected_reference_line, points=tuple(self.selection_points),
+        )
+        result = advance_selection(selection, image_point, self.video_worker.frozen_selection_lines,
+                                   self.tracking_panel.middle_fret_spin.value(), self.reference_fret_spin.value())
+        self.selection_stage = result.selection.stage
+        self.selected_nut_line = result.selection.nut
+        self.selected_middle_line = result.selection.middle
+        self.selected_reference_line = result.selection.reference
+        self.selection_points = list(result.selection.points)
+        if result.error:
+            self.video_status_label.setText(result.error)
+        elif result.grid is not None:
+            self.video_worker.apply_calibrated_selection(result.grid, self.reference_fret_spin.value())
+            self.tracking_panel.set_settings_visible(False)
             self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
             self.video_status_label.setText("지판 맞춤을 적용하는 중입니다.")
+        else:
+            self.update_selection_prompt()
 
         self.render_current_frame()
 
@@ -913,6 +963,12 @@ class MainWindow(QMainWindow):
             silence_threshold=float(self.practice_panel.input_sensitivity_combo.currentData()),
         )
 
+    def handle_input_sensitivity_change(self, _index: int) -> None:
+        # 워커가 매 분석 때 읽는 값을 바꾼다. 감도 변경만으로 장치를 다시 열거나
+        # 진행 중인 음정 분석 스레드를 교체할 필요는 없다.
+        if self.practice_running and self.current_mode() == "interactive":
+            self.audio_controller.set_silence_threshold(float(self.practice_panel.input_sensitivity_combo.currentData()))
+
     def _stop_audio_worker(self) -> None:
         self.audio_controller.stop()
 
@@ -926,6 +982,12 @@ class MainWindow(QMainWindow):
 
         if enriched.get("is_correct") and not enriched.get("held"):
             self._schedule_interactive_advance()
+
+    def _handle_input_level(self, rms: float) -> None:
+        # 정답 후 진행 대기 중에도 미터를 갱신한다. 음정 분석 결과에 포함된
+        # 과거 RMS로 현재 입력을 덮어쓰지 않도록 표시 경로를 분리한다.
+        if self.practice_running and self.current_mode() == "interactive":
+            self.practice_panel.set_input_level(rms)
 
     def _handle_audio_error(self, message: str) -> None:
         self.practice_panel.set_audio_settings_visible(True)
@@ -990,24 +1052,3 @@ class MainWindow(QMainWindow):
         self.stop_practice()
         self.stop_video()
         super().closeEvent(event)
-
-    def _handle_input_level(self, rms: float) -> None:
-        # 정답 후 진행 대기 중에도 미터를 갱신한다. 음정 분석 결과에 포함된
-        # 과거 RMS로 현재 입력을 덮어쓰지 않도록 표시 경로를 분리한다.
-        if self.practice_running and self.current_mode() == "interactive":
-            self.practice_panel.set_input_level(rms)
-
-    def handle_input_sensitivity_change(self, _index: int) -> None:
-        # 워커가 매 분석 때 읽는 값을 바꾼다. 감도 변경만으로 장치를 다시 열거나
-        # 진행 중인 음정 분석 스레드를 교체할 필요는 없다.
-        if self.practice_running and self.current_mode() == "interactive":
-            self.audio_controller.set_silence_threshold(float(self.practice_panel.input_sensitivity_combo.currentData()))
-
-    def refresh_microphone(self) -> None:
-        # 목록을 채우는 동안에는 선택 변경 신호가 차단된다. 따라서 목록만
-        # 갱신하면 오류가 난 스트림이나 사라진 장치의 스트림이 그대로 남는다.
-        # 같은 장치를 다시 골랐더라도 사용자가 새로고침을 누른 경우에는
-        # 현재 표시된 장치로 재연결한다. 중지·자동 흐름 모드는 기존 핸들러가
-        # 걸러 주므로 불필요하게 마이크를 열지 않는다.
-        self.populate_microphone_list()
-        self.handle_microphone_change()
