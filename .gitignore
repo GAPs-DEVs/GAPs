@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 
 # Virtual environments
 .venv/
@@ -48,3 +49,6 @@ pip-wheel-metadata/
 # valid
 tools/valid/ds/
 tools/valid/result/
+
+# Local camera performance reports
+/artifacts/performance/

@@ -1,0 +1,32 @@
+[
+  {
+    "step": 1,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 1,
+    "string": 1,
+    "fret": 7,
+    "duration_ms": 230,
+    "midi_pitch": 71
+  },
+  {
+    "step": 1,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 1,
+    "string": 6,
+    "fret": 0,
+    "duration_ms": 230,
+    "midi_pitch": 40
+  },
+  {
+    "step": 2,
+    "score_line": 1,
+    "measure": 1,
+    "beat": 2,
+    "string": 2,
+    "fret": 0,
+    "duration_ms": 230,
+    "midi_pitch": 59
+  }
+]

@@ -5,15 +5,16 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+import cv2
 
-from fretboard_mapping import NoteMarker
+from vision.fretboard_mapping import NoteMarker
 
 
 DEFAULT_MATCH_RADIUS_PX = 22.0
 MIN_MATCH_RADIUS_PX = 14.0
 MAX_MATCH_RADIUS_PX = 34.0
 FINGERTIP_LANDMARK_IDS = (4, 8, 12, 16, 20)
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "models" / "hand_landmarker.task"
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "hand_landmarker.task"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class HandTrackingResult:
     matched_marker_indices: tuple[int, ...]
     match_radius_px: float
     backend_available: bool
+    hand_polygons: tuple[tuple[tuple[float, float], ...], ...] = ()
 
 
 class MediaPipeHandTracker:
@@ -87,6 +89,7 @@ class MediaPipeHandTracker:
             matched_marker_indices=matched_marker_indices,
             match_radius_px=match_radius_px,
             backend_available=True,
+            hand_polygons=extract_hand_polygons(results, frame_bgr.shape[1], frame_bgr.shape[0]),
         )
 
     def _ensure_backend(self) -> None:
@@ -118,6 +121,61 @@ class MediaPipeHandTracker:
         except Exception as exc:  # pragma: no cover - depends on local runtime
             self._load_error = exc
             self._hands = None
+
+
+def extract_hand_polygons(results, width: int, height: int):
+    """Conservative hulls include fingers, not just the five fingertips."""
+    polygons = []
+    for landmarks in getattr(results, "hand_landmarks", ()) or ():
+        points = np.asarray([(p.x * width, p.y * height) for p in landmarks], dtype=np.float32)
+        if len(points) < 3 or not np.isfinite(points).all():
+            continue
+        hull = cv2.convexHull(points).reshape(-1, 2)
+        polygons.append(tuple((float(x), float(y)) for x, y in hull))
+    return tuple(polygons)
+
+
+def hand_exclusion_mask(polygons, shape: tuple[int, ...]) -> np.ndarray:
+    mask = np.zeros(shape[:2], dtype=np.uint8)
+    for polygon in polygons:
+        points = np.asarray(polygon, dtype=np.float32)
+        if len(points) < 3 or not np.isfinite(points).all():
+            continue
+        hand_mask = np.zeros_like(mask)
+        cv2.fillConvexPoly(hand_mask, np.rint(points).astype(np.int32), 255)
+        padding = int(np.clip(np.sqrt(abs(cv2.contourArea(points))) * 0.12, 6, 24))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * padding + 1, 2 * padding + 1))
+        mask = cv2.bitwise_or(mask, cv2.dilate(hand_mask, kernel))
+    return mask
+
+
+class HandOcclusionMasker:
+    """Local hand inference for board tracking, separate from note judging."""
+
+    def __init__(self) -> None:
+        self.tracker = MediaPipeHandTracker()
+        self.available = False
+        self.previous_mask: np.ndarray | None = None
+
+    def process(self, frame: np.ndarray) -> np.ndarray | None:
+        height, width = frame.shape[:2]
+        scale = min(1.0, 640 / max(height, width))
+        small = cv2.resize(frame, (round(width * scale), round(height * scale))) if scale < 1 else frame
+        result = self.tracker.process(small)
+        self.available = result.backend_available
+        if not self.available:
+            self.previous_mask = None
+            return None
+        mask = hand_exclusion_mask(result.hand_polygons, small.shape)
+        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+        combined = mask
+        if self.previous_mask is not None and self.previous_mask.shape == mask.shape:
+            combined = cv2.bitwise_or(mask, self.previous_mask)
+        self.previous_mask = mask
+        return combined
+
+    def close(self) -> None:
+        self.tracker.close()
 
 
 def extract_fingertips(
