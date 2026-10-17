@@ -311,6 +311,7 @@ def test_controls_fit_horizontally_when_resizing_with_long_content(window):
     window.practice_panel.progress_label.setText('130 / 130 (step 130, 다중음)')
     window.practice_panel.detected_label.setText('E2, A2, D3, G3, B3, E4, C5, D5, E5')
     window.practice_panel.missing_label.setText('1번줄 7프렛, 2번줄 8프렛, 3번줄 9프렛, 4번줄 10프렛')
+    window.practice_panel.details_button.setChecked(True)
     window.microphone_combo.addItem('USB audio interface with a very long device name and multiple microphone inputs')
     window.microphone_combo.setCurrentIndex(window.microphone_combo.count() - 1)
     frame = QImage(1920, 1080, QImage.Format.Format_RGB888)
@@ -335,3 +336,31 @@ def test_controls_fit_horizontally_when_resizing_with_long_content(window):
         for label in (window.camera_panel.status_label, window.practice_panel.progress_label,
                       window.practice_panel.detected_label, window.practice_panel.missing_label):
             assert label.height() >= label.heightForWidth(label.width())
+
+
+def test_practice_feedback_follows_correct_answer_advance_and_completion(window):
+    from practice.score_steps import build_practice_steps
+
+    window.practice_steps = build_practice_steps([
+        {'step': 1, 'string': 1, 'fret': 7},
+        {'step': 2, 'string': 6, 'fret': 0},
+    ])
+    window.current_index = 0
+    with patch.object(window.audio_controller, 'start_for_step'):
+        window.start_practice()
+        assert window.practice_panel.status_label.text() == '듣는 중'
+        window._handle_audio_result({'status': 'correct', 'is_correct': True, 'held': False})
+        assert window.practice_panel.status_label.text() == '정확해요!'
+        window.interactive_advance_timer.stop()
+        window._handle_interactive_advance_timeout()
+        assert window.practice_panel.progress_label.text() == '2 / 2'
+        assert window.practice_panel.note_cards[0].fret_label.text() == '개방현'
+        assert window.practice_panel.note_cards[0].match_label.text() == ''
+        window._handle_audio_result({'status': 'correct', 'is_correct': True, 'held': False})
+        window.interactive_advance_timer.stop()
+        window._handle_interactive_advance_timeout()
+        assert window.practice_panel.status_label.text() == '연습 완료'
+        assert not window.practice_running
+        window.stop_practice()
+        assert window.practice_panel.status_label.text() == '대기'
+        assert window.practice_panel.note_cards[0].match_label.text() == ''

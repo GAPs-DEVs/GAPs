@@ -36,18 +36,6 @@ from app.pages.admin_page import AdminPage
 from app.pages.login_page import LoginPage
 
 
-STATUS_TEXT = {
-    "idle": "대기",
-    "listening": "듣는 중",
-    "correct": "정답",
-    "incorrect": "오답",
-    "no_signal": "신호 없음",
-    "error": "오류",
-    "complete": "완료",
-    "auto": "자동 흐름",
-}
-
-
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -143,7 +131,6 @@ class MainWindow(QMainWindow):
         self.next_step_button.clicked.connect(self.next_step)
         self.reset_practice_button.clicked.connect(self.reset_practice)
         self.progress_label = self.practice_panel.progress_label
-        self.expected_label = self.practice_panel.expected_label
         self.practice_status_label = self.practice_panel.status_label
         self.detected_label = self.practice_panel.detected_label
         self.missing_label = self.practice_panel.missing_label
@@ -866,18 +853,14 @@ class MainWindow(QMainWindow):
 
     def refresh_practice_display(self) -> None:
         step = self.current_step()
-        mode_text = "단일음" if step.mode == "single" else "다중음"
-        self.progress_label.setText(f"{self.current_index + 1} / {len(self.practice_steps)} (step {step.step}, {mode_text})")
-        self.expected_label.setText(", ".join(f"{note.label} {note.frequency:.2f}Hz" for note in step.notes))
+        self.practice_panel.show_step(step, self.current_index, len(self.practice_steps))
         self.practice_tab_strip.set_current_step(step.step)
         if self.practice_running and self.current_mode() == "auto":
-            self.practice_status_label.setText(STATUS_TEXT["auto"])
+            self.practice_panel.set_feedback("auto")
         elif self.practice_running:
-            self.practice_status_label.setText(STATUS_TEXT["listening"])
+            self.practice_panel.set_feedback("listening")
         else:
-            self.practice_status_label.setText(STATUS_TEXT["idle"])
-        self.detected_label.setText("-")
-        self.missing_label.setText("-")
+            self.practice_panel.set_feedback("idle")
         if self.video_worker is not None:
             self.video_worker.set_current_step(step)
 
@@ -894,7 +877,7 @@ class MainWindow(QMainWindow):
             self._start_audio_worker_for_current_step()
         else:
             self._stop_audio_worker()
-            self.practice_status_label.setText(STATUS_TEXT["auto"])
+            self.practice_panel.set_feedback("auto")
             self._schedule_auto_advance()
 
     def stop_practice(self) -> None:
@@ -903,7 +886,7 @@ class MainWindow(QMainWindow):
         self._cancel_pending_interactive_advance()
         self._stop_audio_worker()
         self.practice_panel.set_running(False)
-        self.practice_status_label.setText(STATUS_TEXT["idle"])
+        self.practice_panel.reset_feedback("idle")
 
     def reset_practice(self) -> None:
         self._move_to_step(0)
@@ -938,7 +921,7 @@ class MainWindow(QMainWindow):
             self.practice_panel.set_running(True)
             self._start_audio_worker_for_current_step()
         elif was_running and mode == "auto":
-            self.practice_status_label.setText(STATUS_TEXT["auto"])
+            self.practice_panel.set_feedback("auto")
             self._schedule_auto_advance()
 
     def _complete_practice(self) -> None:
@@ -947,7 +930,7 @@ class MainWindow(QMainWindow):
         self._cancel_pending_interactive_advance()
         self._stop_audio_worker()
         self.practice_panel.set_running(False)
-        self.practice_status_label.setText(STATUS_TEXT["complete"])
+        self.practice_panel.set_feedback("complete")
 
     def _auto_interval_ms(self) -> int:
         return max(1, int(round(self.current_step().duration_ms / self.current_auto_speed_multiplier())))
@@ -966,7 +949,7 @@ class MainWindow(QMainWindow):
     def _start_audio_worker_for_current_step(self) -> None:
         step = self.current_step()
         microphone_device = self.current_microphone_device()
-        self.practice_status_label.setText(STATUS_TEXT["listening"])
+        self.practice_panel.reset_feedback("listening")
         self.audio_controller.start_for_step(step, microphone_device)
 
     def _stop_audio_worker(self) -> None:
@@ -984,29 +967,12 @@ class MainWindow(QMainWindow):
             self._schedule_interactive_advance()
 
     def _handle_audio_error(self, message: str) -> None:
-        self.practice_status_label.setText(STATUS_TEXT["error"])
+        self.practice_panel.reset_feedback("error")
+        self.practice_panel.set_feedback("error", f"마이크 오류 · {message}")
         self.detected_label.setText(message)
 
     def _render_audio_result(self, result: dict) -> None:
-        status = str(result.get("status", "idle"))
-        self.practice_status_label.setText(STATUS_TEXT.get(status, status))
-
-        if result.get("practice_mode") == "single":
-            detected_frequency = result.get("detected_frequency")
-            cents = result.get("cents_difference")
-            if detected_frequency is None:
-                self.detected_label.setText("-")
-            elif cents is None:
-                self.detected_label.setText(f"{float(detected_frequency):.2f} Hz")
-            else:
-                self.detected_label.setText(f"{float(detected_frequency):.2f} Hz / {float(cents):+.1f} cents")
-            self.missing_label.setText("-" if result.get("is_correct") else str(result.get("expected_label", "-")))
-            return
-
-        matched_notes = result.get("matched_notes") or []
-        missing_notes = result.get("missing_notes") or []
-        self.detected_label.setText(", ".join(matched_notes) if matched_notes else "-")
-        self.missing_label.setText(", ".join(missing_notes) if missing_notes else "-")
+        self.practice_panel.show_audio_result(result)
 
     def _schedule_interactive_advance(self) -> None:
         self._pending_advance_index = self.current_index
