@@ -50,5 +50,9 @@ pip-wheel-metadata/
 tools/valid/ds/
 tools/valid/result/
 
-# Local camera performance reports
-/artifacts/performance/
+# Local runtime data and generated diagnostics
+/artifacts/
+/data/
+
+# Model binaries are distributed separately; keep their documentation tracked.
+/models/weights/*.pt
