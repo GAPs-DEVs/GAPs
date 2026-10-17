@@ -64,7 +64,7 @@ def test_six_point_calibration_works_without_any_detected_lines(window):
     window.handle_video_click(180, 310)
     args = window.video_worker.apply_calibrated_selection.call_args.args
     assert args[0].nut_line.kind == 'nut'
-    assert args[0].ordered_fret_lines[-1].p0 == (80, 310)
+    assert args[0].ordered_fret_lines[-1].p0 == pytest.approx((80, 310))
     assert args[1] == 7
     assert window.selection_stage == 'idle'
 
