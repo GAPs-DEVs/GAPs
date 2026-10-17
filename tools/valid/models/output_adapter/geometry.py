@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from fretboard_mapping import DetectedLine, StableFretboardGrid
+# 최신 앱 구조에서는 지판 좌표 관련 타입이 vision 패키지에 있습니다.
+# 이 모듈에서는 PoseLine을 표시용 선분으로 바꿀 때 DetectedLine만 사용합니다.
+from vision.fretboard_mapping import DetectedLine
 
-# from .types import GuidePoint, PipelineConfig, PoseLine, PoseLineStageConfig
 from .types import PoseLine, PoseLineStageConfig
 
 

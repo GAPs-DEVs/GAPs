@@ -53,7 +53,10 @@ def _build_pose_line(
         return None
 
     xy = np.asarray(points[: pipeline_config.keypoint_count, :2], dtype=np.float32)
-    visibility = np.asarray(points[: pipeline_config.keypoint_count, 2] > 0.0, dtype=bool)
+    visibility = np.asarray(
+        points[: pipeline_config.keypoint_count, 2] > pipeline_config.point_conf_threshold,
+        dtype=bool,
+    )
     if int(np.count_nonzero(visibility)) < pipeline_config.min_visible_keypoints:
         return None
 

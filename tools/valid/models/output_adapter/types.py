@@ -27,26 +27,13 @@ class PoseLine:
 
 
 @dataclass(frozen=True)
-class GuidePoint:
-    # 이 guide point가 몇 번째 fret interval에 속하는지 나타냅니다.
-    fret_index: int
-    # 최종 guide point를 구성하는 keypoint 좌표들입니다.
-    # 보통 fret interval 중간선 성격의 점 집합입니다.
-    keypoints_xy: tuple[tuple[float, float], ...]
-    # 각 guide keypoint가 유효한지 나타냅니다.
-    visibility: tuple[bool, ...]
-    # guide point 전체를 감싸는 bbox의 중심입니다.
-    bbox_center_xy: tuple[float, float]
-    # guide point 전체를 감싸는 bbox의 크기입니다.
-    bbox_size_xy: tuple[float, float]
-
-
-@dataclass(frozen=True)
 class PoseLineStageConfig:
     # 모델 raw keypoint에서 실제로 읽을 점 개수입니다.
     keypoint_count: int = 6
     # 한 line을 유효하다고 보기 위한 최소 visible keypoint 개수입니다.
     min_visible_keypoints: int = 4
+    # keypoint confidence가 이 값을 초과하는 점만 visible로 취급합니다.
+    point_conf_threshold: float = 0.0
     # nut와 첫 fret가 거의 같은 위치일 때 overlap으로 볼 거리 기준입니다.
     nut_fret_overlap_px: float = 18.0
     # 인접 fret끼리 사실상 같은 선일 때 overlap으로 볼 거리 기준입니다.
