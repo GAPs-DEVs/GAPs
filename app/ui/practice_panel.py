@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSlider
+from PySide6.QtWidgets import QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider
 
 
 class PracticePanel(QGroupBox):
@@ -14,6 +14,12 @@ class PracticePanel(QGroupBox):
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("인터랙티브 연습", "interactive")
         self.mode_combo.addItem("자동 흐름", "auto")
+        for combo in (self.microphone_combo, self.mode_combo):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(6)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            combo.currentTextChanged.connect(combo.setToolTip)
+            combo.setToolTip(combo.currentText())
 
         self.auto_speed_label = QLabel("배속")
         self.auto_speed_slider = QSlider(Qt.Orientation.Horizontal)
@@ -43,12 +49,19 @@ class PracticePanel(QGroupBox):
         self._build_layout()
 
     def _configure_dynamic_labels(self) -> None:
+        for label in (self.progress_label, self.expected_label, self.status_label,
+                      self.detected_label, self.missing_label):
+            label.setWordWrap(True)
+            policy = label.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            label.setSizePolicy(policy)
         self.progress_label.setStyleSheet("font-size: 18px; font-weight: 700;")
         self.expected_label.setStyleSheet("font-size: 16px;")
         self.status_label.setStyleSheet("font-size: 16px; font-weight: 700;")
 
     def _build_layout(self) -> None:
         layout = QGridLayout(self)
+        layout.setColumnStretch(1, 1)
         layout.addWidget(QLabel("마이크"), 0, 0)
         layout.addWidget(self.microphone_combo, 0, 1, 1, 3)
         layout.addWidget(self.refresh_microphone_button, 0, 4)

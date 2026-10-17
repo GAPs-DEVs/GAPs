@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 from PySide6.QtGui import QImage
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtTest import QTest
@@ -300,3 +300,38 @@ def test_help_stays_inside_window_and_scrolls_when_window_is_short(window):
     assert help_button.help_scroll.verticalScrollBar().maximum() > 0
     help_button.popup.close()
     host.close()
+
+
+def test_controls_fit_horizontally_when_resizing_with_long_content(window):
+    show_practice(window)
+    scroll = next(area for area in window.practice_root.findChildren(QScrollArea)
+                  if area.widget() and area.widget().isAncestorOf(window.camera_panel))
+    window.camera_panel.status_label.setText(
+        '선이 인식되지 않았습니다. 수동으로 양 끝점 지정을 선택하고 너트부터 다시 지정해주세요.')
+    window.practice_panel.progress_label.setText('130 / 130 (step 130, 다중음)')
+    window.practice_panel.detected_label.setText('E2, A2, D3, G3, B3, E4, C5, D5, E5')
+    window.practice_panel.missing_label.setText('1번줄 7프렛, 2번줄 8프렛, 3번줄 9프렛, 4번줄 10프렛')
+    window.microphone_combo.addItem('USB audio interface with a very long device name and multiple microphone inputs')
+    window.microphone_combo.setCurrentIndex(window.microphone_combo.count() - 1)
+    frame = QImage(1920, 1080, QImage.Format.Format_RGB888)
+    frame.fill(0)
+    window.video_label.set_current_image(frame)
+    for width, height in ((1440, 900), (1024, 768), (900, 600), (1280, 800)):
+        window.resize(width, height)
+        QApplication.processEvents()
+        window.render_current_frame()
+        QApplication.processEvents()
+        assert window.width() == width
+        assert scroll.widget().width() == scroll.viewport().width()
+        assert scroll.horizontalScrollBar().maximum() == 0
+        assert scroll.mapTo(window, QPoint(scroll.width(), 0)).x() <= window.width()
+        for control in (window.refresh_camera_button, window.stop_video_button,
+                        window.tracking_panel.help_button, window.reference_fret_spin,
+                        window.clear_tracking_button, window.refresh_microphone_button,
+                        window.stop_practice_button, window.reset_practice_button):
+            left = control.mapTo(scroll.viewport(), QPoint()).x()
+            assert left >= 0
+            assert left + control.width() <= scroll.viewport().width()
+        for label in (window.camera_panel.status_label, window.practice_panel.progress_label,
+                      window.practice_panel.detected_label, window.practice_panel.missing_label):
+            assert label.height() >= label.heightForWidth(label.width())
