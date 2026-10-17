@@ -1,0 +1,39 @@
+{
+  "calibrations": [
+    {
+      "frame_index": 84,
+      "nut_line": [
+        [
+          386.203,
+          497.278
+        ],
+        [
+          382.785,
+          584.43
+        ]
+      ],
+      "middle_fret_line": [
+        [
+          885.285,
+          534.019
+        ],
+        [
+          876.978,
+          623.022
+        ]
+      ],
+      "middle_fret_index": 7,
+      "reference_fret_line": [
+        [
+          1317.247,
+          556.566
+        ],
+        [
+          1304.193,
+          656.25
+        ]
+      ],
+      "reference_fret_index": 20
+    }
+  ]
+}

@@ -88,6 +88,18 @@ class PracticeFrameStats:
     ar_expected: bool = False
 
 
+def visible_calibrated_grid(tracking_frame: HybridTrackingFrame) -> StableFretboardGrid | None:
+    """실제 앱이 현재 프레임에 AR 점을 표시할 수 있는 격자만 반환합니다.
+
+    ``selected_lines_hold``는 마지막 격자를 내부적으로 보관하지만 현재 영상에서
+    검증된 위치가 아닙니다. 따라서 앱 표시와 검증 출력 모두 이 상태를 실패로
+    취급하고 점을 내보내지 않아야 합니다.
+    """
+    if tracking_frame.result.tracking_mode == "selected_lines_hold":
+        return None
+    return tracking_frame.result.stable_grid
+
+
 class PracticeVideoWorker(QThread):
     frame_ready = Signal(QImage, object)
     error_message = Signal(str)
@@ -443,7 +455,8 @@ class PracticeVideoWorker(QThread):
         elif tracking_frame.homography is not None:
             self.note_marker_tracker.apply_motion(tracking_frame.homography)
         class_counts = count_detected_classes(primary_detected_lines)
-        if tracking_result.stable_grid is None or tracking_result.tracking_mode == "selected_lines_hold":
+        visible_grid = visible_calibrated_grid(tracking_frame)
+        if visible_grid is None:
             self.note_marker_tracker.update(())
             hand_tracking = self._process_hand_tracking(frame_bgr, ())
             annotated = frame_bgr.copy()
@@ -462,11 +475,14 @@ class PracticeVideoWorker(QThread):
 
         # Calibrated guides use only the registered model. Per-frame edge
         # diagnostics do not affect their coordinates; keep them in the viewer.
-        stable_grid = tracking_result.stable_grid
+        stable_grid = visible_grid
         edge_refinement = None
-        note_markers = (
-            self._build_current_note_markers(stable_grid, edge_refinement, calibrated=True)
-            if tracking_result.tracking_mode != "selected_lines_hold" else ()
+        # hold 상태는 visible_calibrated_grid() 검사에서 이미 반환되었으므로,
+        # 이 지점의 격자는 현재 프레임에서 표시 가능한 상태입니다.
+        note_markers = self._build_current_note_markers(
+            stable_grid,
+            edge_refinement,
+            calibrated=True,
         )
         note_markers = filter_visible_markers(note_markers, stable_grid, frame_bgr.shape,
                                                tracking_frame.exclusion_mask, hide_occluded=False)
