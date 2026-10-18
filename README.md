@@ -209,6 +209,7 @@ uv run pytest tests/test_practice_markers.py tests/test_score_steps.py tests/tes
 ## 개발 참고
 
 - 메인 앱 개발 규칙은 `app/DEVELOPMENT_GUIDE.md`를 따릅니다.
+- 지판 추적·음정 인식·정답 판정 설계도는 `app/PIPELINE_ARCHITECTURE.md`에 있습니다.
 - 사용자 앱의 실행 진입점은 `app/main.py`입니다.
 - 개발용 지판 검출 뷰어는 `tools/fretboard_detection_viewer.py`에 남아 있습니다.
 - macOS에서는 처음 실행할 때 카메라와 마이크 권한 허용이 필요할 수 있습니다.
