@@ -6,13 +6,13 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 from PySide6.QtGui import QImage
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtTest import QTest
 
 from app.ui.main_window import MainWindow
-from app.ui.tracking_panel import TrackingPanel
+from app.ui.tracking_panel import HelpButton, TrackingPanel
 from vision.fretboard_mapping import DetectedLine
 
 
@@ -119,6 +119,248 @@ def test_invalid_middle_line_returns_to_middle_selection(window):
 def test_calibration_fields_unlock_after_camera_stops(window):
     window.render_current_frame()
     assert not window.reference_fret_spin.isEnabled()
+    assert not window.video_label.pixmap().isNull()
     window.on_video_worker_finished()
     assert window.reference_fret_spin.isEnabled()
     assert window.tracking_panel.middle_fret_spin.isEnabled()
+    assert window.video_label.current_image is None
+    assert window.video_label.pixmap().isNull()
+    assert window.video_label.text() == window.video_label.placeholder_text
+    window.render_current_frame()
+    assert window.video_label.pixmap().isNull()
+
+
+def test_camera_stop_clears_preview_and_ignores_queued_frames(window):
+    window.render_current_frame()
+    last_frame = window.video_label.current_image
+    worker = window.video_worker
+    window.stop_video()
+    worker.stop.assert_called_once()
+    assert window.video_label.current_image is None
+    window.update_frame(last_frame, Mock())
+    assert window.video_label.current_image is None
+    assert window.video_label.text() == window.video_label.placeholder_text
+    window.on_video_worker_finished()
+    window.update_frame(last_frame, Mock())
+    assert window.video_label.current_image is None
+    assert window.video_label.pixmap().isNull()
+
+
+def show_practice(window):
+    window.selection_stage = 'idle'
+    window.stacked_widget.setCurrentWidget(window.practice_root)
+    window.show()
+    QApplication.processEvents()
+
+
+def test_start_commits_latest_two_digit_number_without_enter_or_focus_change(window):
+    show_practice(window)
+    spin = window.reference_fret_spin
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin.lineEdit(), '1')
+    assert spin.value() == 7
+    QTest.keyClicks(spin.lineEdit(), '2')
+    assert spin.text() == '12'
+    assert spin.value() == 7
+    # Programmatic activation bypasses focus changes and still must commit.
+    window.select_lines_button.click()
+    assert spin.value() == 12
+    assert window.selection_stage == 'await_frame'
+    window.video_worker.begin_line_selection.assert_called_once()
+
+
+@pytest.mark.parametrize('destination', ['field', 'label', 'button'])
+def test_input_commits_when_clicking_outside_without_enter(window, destination):
+    show_practice(window)
+    spin = window.reference_fret_spin
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin.lineEdit(), '12')
+    target = {
+        'field': window.tracking_panel.middle_fret_spin,
+        'label': window.tracking_panel.hint_label,
+        'button': window.select_lines_button,
+    }[destination]
+    QTest.mouseClick(target, Qt.MouseButton.LeftButton)
+    assert spin.value() == 12
+    if destination == 'button':
+        assert window.selection_stage == 'await_frame'
+
+
+def test_invalid_number_displays_inline_error_and_can_be_corrected(window):
+    show_practice(window)
+    panel = window.tracking_panel
+    panel.middle_fret_spin.setValue(12)
+    window.select_lines_button.click()
+    assert panel.middle_error.isVisible()
+    assert '작아야' in panel.middle_error.text()
+    window.video_worker.begin_line_selection.assert_not_called()
+    panel.middle_fret_spin.setValue(3)
+    assert panel.middle_error.isHidden()
+    window.select_lines_button.click()
+    window.video_worker.begin_line_selection.assert_called_once()
+
+
+def test_cleared_pending_input_blocks_start_instead_of_reusing_old_number(window):
+    show_practice(window)
+    spin = window.reference_fret_spin
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    QTest.keyClick(spin.lineEdit(), Qt.Key.Key_Backspace)
+    window.select_lines_button.click()
+    assert spin.value() == 0
+    assert window.tracking_panel.reference_error.isVisible()
+    window.video_worker.begin_line_selection.assert_not_called()
+
+
+def test_manual_fallback_reuses_frozen_frame_and_guides_each_endpoint(window):
+    window.render_current_frame()
+    panel = window.tracking_panel
+    assert '인식되지' in panel.hint_label.text()
+    panel.manual_points_checkbox.setChecked(True)
+    assert '1/3' in panel.hint_label.text()
+    assert '첫 번째' in panel.hint_label.text()
+    window.handle_video_click(80, 50)
+    assert '반대쪽' in panel.hint_label.text()
+    window.handle_video_click(180, 50)
+    assert '2/3' in panel.hint_label.text()
+    window.handle_video_click(80, 170)
+    window.handle_video_click(180, 170)
+    assert '3/3' in panel.hint_label.text()
+    window.handle_video_click(80, 310)
+    window.handle_video_click(180, 310)
+    window.video_worker.apply_calibrated_selection.assert_called_once()
+    window.video_worker.begin_line_selection.assert_not_called()
+    assert '적용' in panel.hint_label.text()
+    window.clear_manual_tracking()
+    assert panel.hint_label.text() == panel.READY_HINT
+    assert window.selection_points == []
+    assert panel.select_lines_button.isEnabled()
+
+
+def test_selection_error_survives_frame_refresh(window):
+    window.manual_point_selection = True
+    window.handle_video_click(80, 50)
+    window.handle_video_click(81, 50)
+    message = window.tracking_panel.hint_label.text()
+    assert '떨어뜨려' in message
+    window.render_current_frame()
+    assert window.tracking_panel.hint_label.text() == message
+
+
+def test_help_is_keyboard_accessible_and_click_opens_persistent_popup(window):
+    show_practice(window)
+    help_button = window.tracking_panel.help_button
+    help_button.setFocus()
+    assert help_button.hasFocus()
+    QTest.mouseClick(help_button, Qt.MouseButton.LeftButton)
+    assert help_button.popup.isVisible()
+    QTest.keyClick(help_button.popup, Qt.Key.Key_Escape)
+    assert not help_button.popup.isVisible()
+
+
+def test_step_buttons_use_pending_input_and_respect_limits(window):
+    show_practice(window)
+    spin = window.reference_fret_spin
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin.lineEdit(), '12')
+    QTest.mouseClick(spin.increase_button, Qt.MouseButton.LeftButton)
+    assert spin.value() == 13
+    QTest.mouseClick(spin.decrease_button, Qt.MouseButton.LeftButton)
+    assert spin.value() == 12
+    spin.setValue(24)
+    assert not spin.increase_button.isEnabled()
+    spin.setValue(0)
+    assert not spin.decrease_button.isEnabled()
+    QTest.mouseClick(spin.increase_button, Qt.MouseButton.LeftButton)
+    assert spin.value() == 1
+    spin.setFocus()
+    QTest.keyClick(spin, Qt.Key.Key_Up)
+    assert spin.value() == 2
+
+
+def test_help_stays_inside_window_and_scrolls_when_window_is_short(window):
+    host = QWidget()
+    host.resize(400, 480)
+    help_button = HelpButton('지판 맞춤', TrackingPanel.HELP_TEXT)
+    help_button.setParent(host)
+    help_button.move(370, 440)
+    host.show()
+    QApplication.processEvents()
+    help_button.show_help()
+    QApplication.processEvents()
+    bounds = QRect(host.mapToGlobal(QPoint()), host.size())
+    assert bounds.contains(help_button.popup.frameGeometry())
+    host.resize(380, 220)
+    QApplication.processEvents()
+    bounds = QRect(host.mapToGlobal(QPoint()), host.size())
+    assert bounds.contains(help_button.popup.frameGeometry())
+    assert help_button.help_scroll.verticalScrollBar().maximum() > 0
+    help_button.popup.close()
+    host.close()
+
+
+def test_controls_fit_horizontally_when_resizing_with_long_content(window):
+    show_practice(window)
+    scroll = next(area for area in window.practice_root.findChildren(QScrollArea)
+                  if area.widget() and area.widget().isAncestorOf(window.camera_panel))
+    window.camera_panel.status_label.setText(
+        '선이 인식되지 않았습니다. 수동으로 양 끝점 지정을 선택하고 너트부터 다시 지정해주세요.')
+    window.practice_panel.progress_label.setText('130 / 130 (step 130, 다중음)')
+    window.practice_panel.detected_label.setText('E2, A2, D3, G3, B3, E4, C5, D5, E5')
+    window.practice_panel.missing_label.setText('1번줄 7프렛, 2번줄 8프렛, 3번줄 9프렛, 4번줄 10프렛')
+    window.practice_panel.details_button.setChecked(True)
+    window.microphone_combo.addItem('USB audio interface with a very long device name and multiple microphone inputs')
+    window.microphone_combo.setCurrentIndex(window.microphone_combo.count() - 1)
+    frame = QImage(1920, 1080, QImage.Format.Format_RGB888)
+    frame.fill(0)
+    window.video_label.set_current_image(frame)
+    for width, height in ((1440, 900), (1024, 768), (900, 600), (1280, 800)):
+        window.resize(width, height)
+        QApplication.processEvents()
+        window.render_current_frame()
+        QApplication.processEvents()
+        assert window.width() == width
+        assert scroll.widget().width() == scroll.viewport().width()
+        assert scroll.horizontalScrollBar().maximum() == 0
+        assert scroll.mapTo(window, QPoint(scroll.width(), 0)).x() <= window.width()
+        for control in (window.refresh_camera_button, window.stop_video_button,
+                        window.tracking_panel.help_button, window.reference_fret_spin,
+                        window.clear_tracking_button, window.refresh_microphone_button,
+                        window.stop_practice_button, window.reset_practice_button):
+            left = control.mapTo(scroll.viewport(), QPoint()).x()
+            assert left >= 0
+            assert left + control.width() <= scroll.viewport().width()
+        for label in (window.camera_panel.status_label, window.practice_panel.progress_label,
+                      window.practice_panel.detected_label, window.practice_panel.missing_label):
+            assert label.height() >= label.heightForWidth(label.width())
+
+
+def test_practice_feedback_follows_correct_answer_advance_and_completion(window):
+    from practice.score_steps import build_practice_steps
+
+    window.practice_steps = build_practice_steps([
+        {'step': 1, 'string': 1, 'fret': 7},
+        {'step': 2, 'string': 6, 'fret': 0},
+    ])
+    window.current_index = 0
+    with patch.object(window.audio_controller, 'start_for_step'):
+        window.start_practice()
+        assert window.practice_panel.status_label.text() == '듣는 중'
+        window._handle_audio_result({'status': 'correct', 'is_correct': True, 'held': False})
+        assert window.practice_panel.status_label.text() == '정확해요!'
+        window.interactive_advance_timer.stop()
+        window._handle_interactive_advance_timeout()
+        assert window.practice_panel.progress_label.text() == '2 / 2'
+        assert window.practice_panel.note_cards[0].fret_label.text() == '개방현'
+        assert window.practice_panel.note_cards[0].match_label.text() == ''
+        window._handle_audio_result({'status': 'correct', 'is_correct': True, 'held': False})
+        window.interactive_advance_timer.stop()
+        window._handle_interactive_advance_timeout()
+        assert window.practice_panel.status_label.text() == '연습 완료'
+        assert not window.practice_running
+        window.stop_practice()
+        assert window.practice_panel.status_label.text() == '대기'
+        assert window.practice_panel.note_cards[0].match_label.text() == ''

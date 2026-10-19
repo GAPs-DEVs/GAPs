@@ -36,18 +36,6 @@ from app.pages.admin_page import AdminPage
 from app.pages.login_page import LoginPage
 
 
-STATUS_TEXT = {
-    "idle": "대기",
-    "listening": "듣는 중",
-    "correct": "정답",
-    "incorrect": "오답",
-    "no_signal": "신호 없음",
-    "error": "오류",
-    "complete": "완료",
-    "auto": "자동 흐름",
-}
-
-
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -69,6 +57,7 @@ class MainWindow(QMainWindow):
             raise ValueError("score JSON must contain at least one practice step.")
 
         self.video_worker: PracticeVideoWorker | None = None
+        self._video_stopping = False
         self.audio_controller = PracticeAudioController(self)
         self.audio_controller.result_ready.connect(self._handle_audio_result)
         self.audio_controller.error_message.connect(self._handle_audio_error)
@@ -76,6 +65,7 @@ class MainWindow(QMainWindow):
         self.current_index = 0
         self.practice_running = False
         self.selection_stage = "idle"
+        self._selection_hint_state = None
         self.selected_nut_line: DetectedLine | None = None
         self.selected_middle_line: DetectedLine | None = None
         self.selected_reference_line: DetectedLine | None = None
@@ -94,7 +84,7 @@ class MainWindow(QMainWindow):
         self.auto_flow_timer.setSingleShot(True)
         self.auto_flow_timer.timeout.connect(self._handle_auto_flow_tick)
 
-        self.video_label = VideoSurface("카메라를 시작하면 기타 지판 위에 연습할 위치가 표시됩니다.")
+        self.video_label = VideoSurface("카메라가 꺼져있습니다.")
         self.video_label.clicked.connect(self.handle_video_click)
         self.practice_tab_strip = PracticeTabStrip()
 
@@ -118,6 +108,7 @@ class MainWindow(QMainWindow):
         self.clear_tracking_button = self.tracking_panel.clear_tracking_button
         self.select_lines_button.clicked.connect(self.begin_line_selection)
         self.clear_tracking_button.clicked.connect(self.clear_manual_tracking)
+        self.tracking_panel.manual_points_checkbox.toggled.connect(self.handle_manual_selection_change)
 
         self.practice_panel = PracticePanel()
         self.microphone_combo = self.practice_panel.microphone_combo
@@ -140,7 +131,6 @@ class MainWindow(QMainWindow):
         self.next_step_button.clicked.connect(self.next_step)
         self.reset_practice_button.clicked.connect(self.reset_practice)
         self.progress_label = self.practice_panel.progress_label
-        self.expected_label = self.practice_panel.expected_label
         self.practice_status_label = self.practice_panel.status_label
         self.detected_label = self.practice_panel.detected_label
         self.missing_label = self.practice_panel.missing_label
@@ -612,8 +602,10 @@ class MainWindow(QMainWindow):
         self.video_worker.frame_ready.connect(self.update_frame)
         self.video_worker.error_message.connect(self.handle_video_error)
         self.video_worker.finished.connect(self.on_video_worker_finished)
+        self._video_stopping = False
         self.camera_panel.set_running(True)
         self.selection_stage = "idle"
+        self.tracking_panel.hint_label.setText(TrackingPanel.READY_HINT)
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
         self.video_status_label.setText("카메라 실행 중")
         self.video_worker.start()
@@ -621,10 +613,15 @@ class MainWindow(QMainWindow):
     def stop_video(self) -> None:
         if self.video_worker is None:
             return
+        self._video_stopping = True
+        self.video_label.reset_placeholder()
+        self.refresh_marker_status()
         self.video_status_label.setText("카메라를 끄는 중")
         self.video_worker.stop()
 
     def update_frame(self, image: QImage, stats: PracticeFrameStats) -> None:
+        if self.video_worker is None or self._video_stopping:
+            return
         self.video_label.set_current_image(image)
         self.latest_stable_grid = stats.stable_grid
         self.latest_edge_refinement = stats.edge_refinement
@@ -637,6 +634,7 @@ class MainWindow(QMainWindow):
                 self.video_status_label.setText("먼저 기준 프렛 번호를 지정하고 지판 맞추기를 눌러주세요.")
             elif stats.tracking_mode in {"selected_lines_tracking", "selected_lines_reacquired"}:
                 self.video_status_label.setText("지판 맞춤 완료")
+                self.tracking_panel.hint_label.setText("지판 맞춤 완료 · 연습을 시작하세요.")
             elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity"}:
                 self.video_status_label.setText("지판 움직임 추적 중")
             elif stats.tracking_mode == "selected_lines_hold":
@@ -661,14 +659,17 @@ class MainWindow(QMainWindow):
     def on_video_worker_finished(self) -> None:
         self.camera_panel.set_running(False)
         self.video_worker = None
+        self._video_stopping = False
         self.selection_stage = "idle"
         self.selected_nut_line = None
+        self.selected_middle_line = None
         self.selected_reference_line = None
+        self.selection_points = []
+        self.tracking_panel.hint_label.setText(TrackingPanel.READY_HINT)
         self.latest_stable_grid = None
         self.latest_edge_refinement = None
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
-        if self.video_label.pixmap() is None:
-            self.video_label.reset_placeholder()
+        self.video_label.reset_placeholder()
         self.video_status_label.setText("카메라 대기")
         self.refresh_marker_status()
         self.render_current_frame()
@@ -688,10 +689,9 @@ class MainWindow(QMainWindow):
             self.practice_tab_strip.set_data([])
 
     def begin_line_selection(self) -> None:
-        middle = self.tracking_panel.middle_fret_spin.value()
-        last = self.reference_fret_spin.value()
-        if not 0 < middle < last:
-            self.video_status_label.setText("중간·끝 기준 프렛 번호를 입력해주세요. 중간 번호는 끝 번호보다 작아야 합니다.")
+        if self.selection_stage != "idle":
+            return
+        if not self.tracking_panel.commit_and_validate():
             return
         if self.video_worker is None or not self.video_worker.isRunning():
             QMessageBox.information(self, "카메라 필요", "카메라를 먼저 시작해주세요.")
@@ -713,11 +713,27 @@ class MainWindow(QMainWindow):
     def clear_manual_tracking(self) -> None:
         self.selection_stage = "idle"
         self.selected_nut_line = None
+        self.selected_middle_line = None
         self.selected_reference_line = None
+        self.selection_points = []
+        self.tracking_panel.clear_errors()
+        self.tracking_panel.hint_label.setText(TrackingPanel.READY_HINT)
         self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
         if self.video_worker is not None:
             self.video_worker.clear_manual_tracking()
-        self.video_status_label.setText("카메라 실행 중")
+        self.video_status_label.setText("카메라 실행 중" if self.video_worker is not None else "카메라 대기")
+        self.render_current_frame()
+
+    def handle_manual_selection_change(self, checked: bool) -> None:
+        self.manual_point_selection = checked
+        if self.selection_stage in {"select_nut", "select_middle", "select_fret"}:
+            # Reuse the frozen frame, but never mix detected lines with a
+            # partially collected six-point calibration.
+            self.selection_stage = "select_nut"
+            self.selected_nut_line = None
+            self.selected_middle_line = None
+            self.selected_reference_line = None
+            self.selection_points = []
         self.render_current_frame()
 
     def map_label_click_to_image(self, label_x: float, label_y: float) -> tuple[float, float] | None:
@@ -741,6 +757,7 @@ class MainWindow(QMainWindow):
                 self.selection_points = self.selection_points[:-2]
                 self.video_status_label.setText("선의 양 끝점을 충분히 떨어뜨려 지정해주세요.")
                 self.render_current_frame()
+                self.tracking_panel.hint_label.setText("양 끝점을 충분히 떨어뜨려 다시 지정해주세요.")
                 return
             kind = "nut" if self.selection_stage == "select_nut" else "fret"
             selected_line = DetectedLine(kind, first, second, 1.0)
@@ -749,7 +766,9 @@ class MainWindow(QMainWindow):
             candidates = tuple(line for line in self.video_worker.frozen_selection_lines if line.kind == kind)
             selected_line = find_nearest_line(image_point, candidates)
             if selected_line is None:
-                self.video_status_label.setText("선에 더 가깝게 클릭하거나, 양 끝점 직접 지정을 사용해주세요.")
+                message = "선을 가까이 클릭하거나 ‘수동으로 양 끝점 지정’을 선택하세요."
+                self.video_status_label.setText(message)
+                self.tracking_panel.hint_label.setText(message)
                 return
 
         if self.selection_stage == "select_nut":
@@ -778,17 +797,25 @@ class MainWindow(QMainWindow):
                     self.selected_reference_line = None
                     self.video_status_label.setText(str(error))
                     self.render_current_frame()
+                    self.tracking_panel.hint_label.setText(f"중간 프렛을 다시 선택하세요. {error}")
                     return
                 self.video_worker.apply_calibrated_selection(grid, self.reference_fret_spin.value())
             self.selection_stage = "idle"
             self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
             self.video_status_label.setText("지판 맞춤을 적용하는 중입니다.")
+            self.tracking_panel.hint_label.setText("지판 맞춤을 적용하는 중입니다.")
 
         self.render_current_frame()
 
     def render_current_frame(self) -> None:
         self.reference_fret_spin.setEnabled(self.selection_stage == "idle")
         self.tracking_panel.middle_fret_spin.setEnabled(self.selection_stage == "idle")
+        self.select_lines_button.setEnabled(self.selection_stage == "idle")
+        hint_state = (self.selection_stage, self.manual_point_selection, len(self.selection_points),
+                      self.tracking_panel.middle_fret_spin.value(), self.reference_fret_spin.value())
+        if hint_state != self._selection_hint_state:
+            self._selection_hint_state = hint_state
+            self.refresh_selection_hint()
         self.video_label.render_frame(
             selection_stage=self.selection_stage,
             selected_nut_line=self.selected_nut_line,
@@ -799,24 +826,41 @@ class MainWindow(QMainWindow):
                                      if self.selection_stage == "select_middle" else self.reference_fret_spin.value()),
         )
 
+    def refresh_selection_hint(self) -> None:
+        if self.selection_stage == "await_frame":
+            self.tracking_panel.hint_label.setText("지판 맞춤을 준비하고 있습니다.")
+        elif self.selection_stage in {"select_nut", "select_middle", "select_fret"}:
+            step, target = {
+                "select_nut": (1, "너트"),
+                "select_middle": (2, f"중간 {self.tracking_panel.middle_fret_spin.value()}프렛"),
+                "select_fret": (3, f"끝 {self.reference_fret_spin.value()}프렛"),
+            }[self.selection_stage]
+            action = "선을 선택하세요."
+            if self.manual_point_selection:
+                endpoint = "첫 번째" if len(self.selection_points) % 2 == 0 else "반대쪽"
+                action = f"{endpoint} 끝점을 선택하세요."
+            self.tracking_panel.hint_label.setText(f"{step}/3 · {target} {action}")
+            if not self.manual_point_selection and self.video_worker is not None:
+                kind = "nut" if self.selection_stage == "select_nut" else "fret"
+                if not any(line.kind == kind for line in self.video_worker.frozen_selection_lines):
+                    self.tracking_panel.hint_label.setText(f"{step}/3 · {target} 선이 인식되지 않았습니다. ‘수동으로 양 끝점 지정’을 선택하세요.")
+        if self.selection_stage != "idle":
+            self.video_status_label.setText(self.tracking_panel.hint_label.text())
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.render_current_frame()
 
     def refresh_practice_display(self) -> None:
         step = self.current_step()
-        mode_text = "단일음" if step.mode == "single" else "다중음"
-        self.progress_label.setText(f"{self.current_index + 1} / {len(self.practice_steps)} (step {step.step}, {mode_text})")
-        self.expected_label.setText(", ".join(f"{note.label} {note.frequency:.2f}Hz" for note in step.notes))
+        self.practice_panel.show_step(step, self.current_index, len(self.practice_steps))
         self.practice_tab_strip.set_current_step(step.step)
         if self.practice_running and self.current_mode() == "auto":
-            self.practice_status_label.setText(STATUS_TEXT["auto"])
+            self.practice_panel.set_feedback("auto")
         elif self.practice_running:
-            self.practice_status_label.setText(STATUS_TEXT["listening"])
+            self.practice_panel.set_feedback("listening")
         else:
-            self.practice_status_label.setText(STATUS_TEXT["idle"])
-        self.detected_label.setText("-")
-        self.missing_label.setText("-")
+            self.practice_panel.set_feedback("idle")
         if self.video_worker is not None:
             self.video_worker.set_current_step(step)
 
@@ -833,7 +877,7 @@ class MainWindow(QMainWindow):
             self._start_audio_worker_for_current_step()
         else:
             self._stop_audio_worker()
-            self.practice_status_label.setText(STATUS_TEXT["auto"])
+            self.practice_panel.set_feedback("auto")
             self._schedule_auto_advance()
 
     def stop_practice(self) -> None:
@@ -842,7 +886,7 @@ class MainWindow(QMainWindow):
         self._cancel_pending_interactive_advance()
         self._stop_audio_worker()
         self.practice_panel.set_running(False)
-        self.practice_status_label.setText(STATUS_TEXT["idle"])
+        self.practice_panel.reset_feedback("idle")
 
     def reset_practice(self) -> None:
         self._move_to_step(0)
@@ -877,7 +921,7 @@ class MainWindow(QMainWindow):
             self.practice_panel.set_running(True)
             self._start_audio_worker_for_current_step()
         elif was_running and mode == "auto":
-            self.practice_status_label.setText(STATUS_TEXT["auto"])
+            self.practice_panel.set_feedback("auto")
             self._schedule_auto_advance()
 
     def _complete_practice(self) -> None:
@@ -886,7 +930,7 @@ class MainWindow(QMainWindow):
         self._cancel_pending_interactive_advance()
         self._stop_audio_worker()
         self.practice_panel.set_running(False)
-        self.practice_status_label.setText(STATUS_TEXT["complete"])
+        self.practice_panel.set_feedback("complete")
 
     def _auto_interval_ms(self) -> int:
         return max(1, int(round(self.current_step().duration_ms / self.current_auto_speed_multiplier())))
@@ -905,7 +949,7 @@ class MainWindow(QMainWindow):
     def _start_audio_worker_for_current_step(self) -> None:
         step = self.current_step()
         microphone_device = self.current_microphone_device()
-        self.practice_status_label.setText(STATUS_TEXT["listening"])
+        self.practice_panel.reset_feedback("listening")
         self.audio_controller.start_for_step(step, microphone_device)
 
     def _stop_audio_worker(self) -> None:
@@ -923,29 +967,12 @@ class MainWindow(QMainWindow):
             self._schedule_interactive_advance()
 
     def _handle_audio_error(self, message: str) -> None:
-        self.practice_status_label.setText(STATUS_TEXT["error"])
+        self.practice_panel.reset_feedback("error")
+        self.practice_panel.set_feedback("error", f"마이크 오류 · {message}")
         self.detected_label.setText(message)
 
     def _render_audio_result(self, result: dict) -> None:
-        status = str(result.get("status", "idle"))
-        self.practice_status_label.setText(STATUS_TEXT.get(status, status))
-
-        if result.get("practice_mode") == "single":
-            detected_frequency = result.get("detected_frequency")
-            cents = result.get("cents_difference")
-            if detected_frequency is None:
-                self.detected_label.setText("-")
-            elif cents is None:
-                self.detected_label.setText(f"{float(detected_frequency):.2f} Hz")
-            else:
-                self.detected_label.setText(f"{float(detected_frequency):.2f} Hz / {float(cents):+.1f} cents")
-            self.missing_label.setText("-" if result.get("is_correct") else str(result.get("expected_label", "-")))
-            return
-
-        matched_notes = result.get("matched_notes") or []
-        missing_notes = result.get("missing_notes") or []
-        self.detected_label.setText(", ".join(matched_notes) if matched_notes else "-")
-        self.missing_label.setText(", ".join(missing_notes) if missing_notes else "-")
+        self.practice_panel.show_audio_result(result)
 
     def _schedule_interactive_advance(self) -> None:
         self._pending_advance_index = self.current_index

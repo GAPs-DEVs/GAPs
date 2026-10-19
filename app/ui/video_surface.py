@@ -15,7 +15,9 @@ class VideoSurface(QLabel):
         self.placeholder_text = placeholder_text
         self.current_image: QImage | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(960, 540)
+        # The preview scales to the available space; a 960px minimum forces
+        # the adjacent controls outside smaller desktop windows.
+        self.setMinimumSize(320, 180)
         self.setStyleSheet(
             "background-color: #101418; color: #e8eef2; border: 1px solid #24303a; font-size: 20px;"
         )
