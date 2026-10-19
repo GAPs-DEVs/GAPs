@@ -48,3 +48,4 @@ pip-wheel-metadata/
 
 # Local camera performance reports
 /artifacts/performance/
+/benchmark/results/

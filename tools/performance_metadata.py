@@ -24,7 +24,7 @@ def git_text(root, *args):
 
 def source_hash(root):
     digest = hashlib.sha256()
-    for folder in ('app', 'vision', 'practice', 'audio', 'tools'):
+    for folder in ('app', 'vision', 'practice', 'audio', 'tools', 'benchmark'):
         for path in sorted((root / folder).rglob('*.py')):
             digest.update(path.relative_to(root).as_posix().encode())
             digest.update(path.read_bytes())

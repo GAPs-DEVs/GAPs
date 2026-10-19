@@ -194,6 +194,17 @@ GuitarPro 업로드 기능은 변환된 파일을 `examples/*_parsed.json` 형�
 
 ## 테스트
 
+화면 성능 자체 평가는 [`benchmark/README.md`](benchmark/README.md)의 측정 절차를 사용합니다.
+
+```bash
+uv run python -m app.main --benchmark-screen --camera 0 --duration 30 --label current-normal-run1
+```
+
+화면 FPS·프레임 간격·끊김·입력→화면 지연을 측정하며, 결과는 `benchmark/results/screen/`에 저장합니다.
+평소처럼 악보 선택·카메라 시작·지판 맞추기를 한 뒤 F8 설정창에서 1~600초를 지정하고 F9로 측정합니다.
+측정 중에는 설정창을 숨겨 메인 앱의 영상 크기를 유지하며, 통계 계산과 저장은 종료 후 수행합니다.
+기존 `python -m benchmark.screen` 명령도 같은 메인 앱 실행 경로를 사용합니다.
+
 전체 테스트 실행:
 
 ```bash

@@ -238,13 +238,12 @@ class FramePerformanceWindow(MainWindow):
             for column, value in enumerate(cells):
                 self.comparison.setItem(row, column, QTableWidgetItem(value))
 
-    def save_report(self):
-        if not self.monitor.records:
+    def save_report(self, *, allow_empty=False):
+        if not self.monitor.records and not allow_empty:
             self.save_status.setText('저장할 측정값이 없습니다. 카메라를 시작해주세요.')
             return
         now = datetime.now(ZoneInfo('Asia/Seoul'))
         directory = self.output_dir / now.strftime('fps-%Y%m%d-%H%M%S-%f')
-        self.monitor.break_stream()
         try:
             self.monitor.export(directory, now=monotonic(), metadata={
                 **report_identity(PROJECT_ROOT, self.model_path, self.score_path, self.camera_calibration),
