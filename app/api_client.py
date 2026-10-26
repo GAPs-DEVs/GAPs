@@ -43,6 +43,34 @@ class APIClient:
         except Exception as e:
             return False, f"서버 통신 실패: {e}"
 
+    def save_practice_record(self, record_payload: dict):
+        """연습 종료/중단 후 결과 전송 (POST /api/practice/records)"""
+        # 1. 게스트 모드일 경우 서버 통신 없이 패스
+        if not self.access_token:
+          print("[기록 저장] 게스트 모드이므로 서버 저장을 생략합니다.")
+          return True, {"guest": True}
+
+        url = f"{self.base_url}/api/practice/records"
+        try:
+          res = requests.post(
+              url,
+              json=record_payload,
+              headers=self._get_headers(),
+              verify=False,
+              timeout=5,
+          )
+
+          # 201(최초 생성) 또는 200(동일 재전송 성공)
+          if res.status_code in [200, 201]:
+            print(f"[기록 저장 성공] Record ID: {res.json().get('record', {}).get('id')}")
+            return True, res.json()
+          else:
+            print(f"[기록 저장 실패] HTTP {res.status_code}: {res.text}")
+            return False, res.text
+        except Exception as e:
+          print(f"[기록 저장 에러] {e}")
+          return False, str(e)
+    
     # def sync_scores(self, local_save_dir: str):
     #     """서버로부터 악보 리스트를 받아 로컬 캐시 우선 동기화"""
     #     url = f"{self.base_url}/api/scores/sync"

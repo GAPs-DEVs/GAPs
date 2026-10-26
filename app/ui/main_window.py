@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import json
+import uuid
+import time
+
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QImage
@@ -34,6 +37,8 @@ from vision.fretboard_calibration import build_calibrated_grid
 from app.pages.select_page import SelectPage
 from app.pages.admin_page import AdminPage
 from app.pages.login_page import LoginPage
+from app.practice_recorder import PracticeResultCollector
+from app.api_client import api_client
 
 
 class MainWindow(QMainWindow):
@@ -134,6 +139,9 @@ class MainWindow(QMainWindow):
         self.practice_status_label = self.practice_panel.status_label
         self.detected_label = self.practice_panel.detected_label
         self.missing_label = self.practice_panel.missing_label
+        
+        self.recorder = None
+        self.start_time = None
 
         # root = QWidget()
         # root_layout = QHBoxLayout(root)
@@ -867,6 +875,24 @@ class MainWindow(QMainWindow):
     def start_practice(self) -> None:
         if self.practice_running:
             return
+
+        # 1. 수집기(PracticeResultCollector) 세션 초기화
+        v_id = None
+        score_obj = getattr(self, "current_score", None)
+        if isinstance(score_obj, dict):
+            v_id = score_obj.get("version_id") or score_obj.get("selected_version_id")
+        elif hasattr(score_obj, "version_id"):
+            v_id = getattr(score_obj, "version_id", None)
+
+        # 실제 서버 DB에 등록된 로망스 기본 version_id로 fallback
+        if not v_id:
+            v_id = "0bc0c931-3c0c-5b8a-a3f6-54768c109f21"
+
+        self.recorder = PracticeResultCollector(score_version_id=v_id)
+        self.start_time = time.time()
+        print(f"[PracticeRecorder] 연습 세션 시작: version_id={v_id}")
+
+        # 2. 기존 연습 실행 및 디스플레이/오디오 설정
         self.practice_running = True
         self.practice_panel.set_running(True)
         self._cancel_pending_interactive_advance()
@@ -881,6 +907,19 @@ class MainWindow(QMainWindow):
             self._schedule_auto_advance()
 
     def stop_practice(self) -> None:
+        # 1. 진행 중이던 연습 기록이 있다면 'abandoned' 상태로 서버에 전송
+        if getattr(self, "recorder", None):
+            active_ms = 0
+            if getattr(self, "start_time", None):
+                active_ms = int((time.time() - self.start_time) * 1000)
+
+            payload = self.recorder.build_payload(
+                status="abandoned", active_duration_ms=active_ms
+            )
+            api_client.save_practice_record(payload)
+            self.recorder = None  # 중복 전송 방지
+
+        # 2. 기존 정지 로직 수행
         self.practice_running = False
         self.auto_flow_timer.stop()
         self._cancel_pending_interactive_advance()
@@ -897,9 +936,51 @@ class MainWindow(QMainWindow):
         self._move_to_step(self.current_index - 1)
 
     def next_step(self) -> None:
+        # 1. 다음 스텝으로 넘어가기 전, 현재 스텝을 정답(correct)으로 수집기에 기록
+        if getattr(self, "recorder", None):
+            cur_step = self.current_step()
+            print("🔥🔥 [DEBUG cur_step]", vars(cur_step) if hasattr(cur_step, "__dict__") else cur_step)
+            
+            # (1) cur_step 객체 자체 속성 탐색
+            step_id = getattr(cur_step, "score_step_id", None)
+            
+            # (2) cur_step이 dict 형태인 경우
+            if not step_id and isinstance(cur_step, dict):
+                step_id = cur_step.get("score_step_id")
+                
+            # (3) cur_step 내부의 notes 리스트에서 추출
+            if not step_id:
+                notes = getattr(cur_step, "notes", None) or getattr(cur_step, "target_notes", None)
+                if notes and len(notes) > 0:
+                    first_note = notes[0]
+                    step_id = getattr(first_note, "score_step_id", None) or (
+                        first_note.get("score_step_id") if isinstance(first_note, dict) else None
+                    )
+
+            # (4) 속성을 찾지 못한 경우: DB에 실제 존재하는 로망스 1번 스텝 ID로 안전하게 방어
+            if not step_id:
+                step_id = "cbabf6f7-c9c9-512c-8530-8fe8f55d666d"
+                print(f"[PracticeRecorder] 대체 step_id 사용: {step_id}")
+            else:
+                print(f"[PracticeRecorder] 스텝 판정 기록: step_id={step_id}")
+
+            self.on_note_evaluated(step_id=step_id, is_correct=True)
+
+        # 2. 마지막 스텝 완주 검사 (완주 시 completed 상태로 전송)
         if self.current_index >= len(self.practice_steps) - 1:
+            if getattr(self, "recorder", None):
+                active_ms = 0
+                if getattr(self, "start_time", None):
+                    active_ms = int((time.time() - self.start_time) * 1000)
+
+                payload = self.recorder.build_payload(status="completed", active_duration_ms=active_ms)
+                api_client.save_practice_record(payload)
+                self.recorder = None
+
             self._complete_practice()
             return
+
+        # 3. 다음 스텝으로 이동
         self._move_to_step(self.current_index + 1)
 
     def _move_to_step(self, index: int) -> None:
@@ -997,8 +1078,33 @@ class MainWindow(QMainWindow):
         if self.interactive_advance_timer.isActive():
             self.interactive_advance_timer.stop()
         self._pending_advance_index = None
+        
+
+    def on_note_evaluated(self, step_id, is_correct, error_type=None):
+        """판정 결과 수집"""
+        if getattr(self, "recorder", None):
+            outcome = "correct" if is_correct else "incorrect"
+            self.recorder.record_attempt(
+                score_step_id=step_id,
+                outcome=outcome,
+                error_type=error_type
+            )
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        """창 닫을 때 리소스 정리 및 연습 기록 서버 전송"""
+        # 1. 연습 기록 서버 전송 (워커 정지 전 안전하게 전송)
+        if getattr(self, "recorder", None):
+            active_ms = 0
+            if getattr(self, "start_time", None):
+                active_ms = int((time.time() - self.start_time) * 1000)
+
+            # 창을 닫아 종료한 것이므로 'abandoned' 처리
+            payload = self.recorder.build_payload(status="abandoned", active_duration_ms=active_ms)
+            api_client.save_practice_record(payload)
+            self.recorder = None
+
+        # 2. 기존 워커 스레드 정지
         self.stop_practice()
         self.stop_video()
+
         super().closeEvent(event)
