@@ -112,6 +112,8 @@ def main(argv=None):
     parser.add_argument('--score-json', type=Path, default=ROOT / 'examples' / 'score_practice_sample.json')
     parser.add_argument('--camera-calibration', type=Path)
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--record', action='store_true',
+                        help='Save the tracked camera frames for tools.replay_session (current version only)')
     args = parser.parse_args(argv)
     try:
         if args.version == 'main':
@@ -129,6 +131,10 @@ def main(argv=None):
                    '--output-dir', str(output.resolve()), '--label', args.version]
         if args.camera_calibration:
             command.extend(['--camera-calibration', str(args.camera_calibration.resolve())])
+        if args.record:
+            if args.version != 'current':
+                raise ValueError('--record needs the current version; the main baseline has no recorder hook.')
+            command.append('--record')
         return subprocess.call(command, cwd=project)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f'준비 실패: {exc}', file=sys.stderr)

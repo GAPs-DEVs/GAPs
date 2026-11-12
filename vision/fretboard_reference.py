@@ -44,6 +44,40 @@ def _correlation(first: np.ndarray, second: np.ndarray) -> float:
     return float(np.dot(a, b) / denominator) if denominator > 1e-6 else -1.0
 
 
+def _tile_sums(values: np.ndarray, row_starts: np.ndarray, col_starts: np.ndarray) -> np.ndarray:
+    # Columns first: reducing along the contiguous axis is about twice as fast.
+    return np.add.reduceat(np.add.reduceat(values, col_starts, axis=1), row_starts, axis=0)
+
+
+def _tile_statistics(first, second, valid, row_starts, col_starts):
+    """Masked count, both standard deviations and correlation of every tile.
+
+    One pass over the whole tile grid replaces a Python loop of small masked
+    reductions. Values are centered globally first, which leaves each statistic
+    unchanged while keeping the sums of squares well conditioned in float64.
+    """
+    weight = valid.astype(np.float64)
+    first = np.asarray(first, dtype=np.float64)
+    second = np.asarray(second, dtype=np.float64)
+    first = first - first.mean()
+    second = second - second.mean()
+    weighted_first = first * weight
+    weighted_second = second * weight
+    count = _tile_sums(weight, row_starts, col_starts)
+    safe = np.maximum(count, 1.)
+    sum_first = _tile_sums(weighted_first, row_starts, col_starts)
+    sum_second = _tile_sums(weighted_second, row_starts, col_starts)
+    first_squares = np.maximum(
+        _tile_sums(weighted_first * first, row_starts, col_starts) - sum_first * sum_first / safe, 0.)
+    second_squares = np.maximum(
+        _tile_sums(weighted_second * second, row_starts, col_starts) - sum_second * sum_second / safe, 0.)
+    products = _tile_sums(weighted_first * second, row_starts, col_starts) - sum_first * sum_second / safe
+    denominator = np.sqrt(first_squares * second_squares)
+    usable = (denominator > 1e-6) & (count > 0)
+    correlation = np.where(usable, products / np.where(usable, denominator, 1.), -1.)
+    return count, np.sqrt(first_squares / safe), np.sqrt(second_squares / safe), correlation
+
+
 class FretboardVisualReference:
     """Validate image poses cheaply; recover large motion using SIFT on demand.
 
@@ -67,6 +101,13 @@ class FretboardVisualReference:
         self._reference_points: np.ndarray | None = None
         self._reference_descriptors: np.ndarray | None = None
         self._tiles: tuple[tuple[slice, slice], ...] = ()
+        # Grid layout of ``_tiles`` for whole-grid statistics; set by ``seed``.
+        self._row_starts = self._col_starts = None
+        self._row_of_y = self._col_of_x = None
+        self._tile_area = None
+        self._tile_rows = self._tile_cols = None
+        self._tile_centers = None
+        self._template_normalized = None
         self._coarse_template = None
         self._coarse_template_dx = None
         self._frame_source = None
@@ -84,6 +125,8 @@ class FretboardVisualReference:
             'reference_grid', 'reference_gray', 'template', '_template_dx',
             '_template_valid', '_canonical_from_reference', '_reference_quad',
             '_reference_points', '_reference_descriptors', '_tiles',
+            '_row_starts', '_col_starts', '_row_of_y', '_col_of_x', '_tile_area',
+            '_tile_rows', '_tile_cols', '_tile_centers', '_template_normalized',
         ):
             setattr(snapshot, name, getattr(self, name))
         return snapshot
@@ -182,14 +225,36 @@ class FretboardVisualReference:
         template_dx = cv2.Sobel(template, cv2.CV_32F, 1, 0, ksize=3)
         valid = cv2.warpPerspective(mask, canonical, (width, height), flags=cv2.INTER_NEAREST) > 0
         tiles = []
+        tile_cells = []
+        normalized = np.zeros_like(template)
         for row in range(_TILE_ROWS):
             for col in range(_TILE_COLUMNS):
                 ys = slice(row * height // _TILE_ROWS, (row + 1) * height // _TILE_ROWS)
                 xs = slice(col * width // _TILE_COLUMNS, (col + 1) * width // _TILE_COLUMNS)
                 support = valid[ys, xs]
+                patch = template[ys, xs]
+                normalized[ys, xs] = (patch - patch.mean()) / max(float(patch.std()), 2.)
                 if (support.mean() >= 0.6 and template[ys, xs][support].std() >= 2.0
                         and template_dx[ys, xs][support].std() >= 3.0):
                     tiles.append((ys, xs))
+                    tile_cells.append((row, col))
+        row_starts = np.arange(_TILE_ROWS) * height // _TILE_ROWS
+        col_starts = np.arange(_TILE_COLUMNS) * width // _TILE_COLUMNS
+        row_sizes = np.diff(np.append(row_starts, height))
+        col_sizes = np.diff(np.append(col_starts, width))
+        cells = np.asarray(tile_cells, dtype=np.intp).reshape(-1, 2)
+        self._row_starts = _readonly(row_starts)
+        self._col_starts = _readonly(col_starts)
+        self._row_of_y = _readonly(np.repeat(np.arange(_TILE_ROWS), row_sizes))
+        self._col_of_x = _readonly(np.repeat(np.arange(_TILE_COLUMNS), col_sizes))
+        self._tile_area = _readonly(np.outer(row_sizes, col_sizes).astype(np.float64))
+        self._tile_rows = _readonly(cells[:, 0].copy())
+        self._tile_cols = _readonly(cells[:, 1].copy())
+        self._tile_centers = _readonly(np.asarray(
+            [((xs.start + xs.stop) / (2 * width), (ys.start + ys.stop) / (2 * height)) for ys, xs in tiles],
+            dtype=np.float32,
+        ).reshape(-1, 2))
+        self._template_normalized = _readonly(normalized)
         self.reference_grid = grid
         self.reference_gray = _readonly(gray.copy())
         self.template = _readonly(template)
@@ -233,19 +298,39 @@ class FretboardVisualReference:
         visible_area, _ = cv2.intersectConvexConvex(projected, screen)
         return visible_area / area >= 0.55
 
+    def _tile_stats(self, first, second, valid):
+        return _tile_statistics(first, second, valid, self._row_starts, self._col_starts)
+
+    def _of_tiles(self, grid_values: np.ndarray) -> np.ndarray:
+        """Select the usable reference tiles, in ``_tiles`` order, from a grid."""
+        return grid_values[self._tile_rows, self._tile_cols]
+
+    def _tile_image(self, accepted: np.ndarray) -> np.ndarray:
+        """Expand a boolean per-``_tiles`` selection to template pixels."""
+        cells = np.zeros((_TILE_ROWS, _TILE_COLUMNS), dtype=bool)
+        cells[self._tile_rows[accepted], self._tile_cols[accepted]] = True
+        return cells[self._row_of_y][:, self._col_of_x]
+
     def validate(self, frame: np.ndarray, homography: np.ndarray, exclusion_mask=None,
                  *, coarse: bool = False) -> bool:
+        return self.validation_support(frame, homography, exclusion_mask, coarse=coarse)[0]
+
+    def validation_support(self, frame: np.ndarray, homography: np.ndarray, exclusion_mask=None,
+                           *, coarse: bool = False) -> tuple[bool, int, int]:
+        """Validation verdict with (accepted, visible) tile counts for diagnostics.
+
+        Counts are -1 when the pose is rejected before any image comparison.
+        """
         key = self._pose_key('validate', homography, coarse) if exclusion_mask is self._frame_mask else None
         return self._remember(frame, key, lambda: self._validate(frame, homography, exclusion_mask, coarse=coarse))
 
     def _validate(self, frame, homography, exclusion_mask, *, coarse):
         if not self.is_ready or not self._valid_projection(homography, frame.shape):
-            return False
+            return False, -1, -1
         try:
             current, current_dx, _ = self._canonical_image(frame, homography)
         except np.linalg.LinAlgError:
-            return False
-        height, width = self.template.shape
+            return False, -1, -1
         template = self.template
         template_dx = self._template_dx
         if coarse:
@@ -259,32 +344,26 @@ class FretboardVisualReference:
             template_dx = self._coarse_template_dx
             current_dx = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3)
         valid = self._canonical_valid(frame, homography, exclusion_mask, erode_hand=True)
-        available = 0
-        accepted = []
-        for ys, xs in self._tiles:
-            support = valid[ys, xs]
-            if support.mean() < 0.55:
-                continue
-            available += 1
-            reference_pixels = template[ys, xs][support]
-            current_pixels = current[ys, xs][support]
-            # Local centering and normalization make this insensitive to additive
-            # illumination and moderate contrast changes, without moving pixels.
-            # Horizontal fret bars can remain perfectly aligned after an unsafe
-            # width change. Require transverse texture (strings/wood/inlays) as
-            # independent evidence of lateral position and width as well.
-            if (reference_pixels.std() >= 2.0 and current_pixels.std() >= 1.5
-                    and _correlation(reference_pixels, current_pixels) >= 0.72
-                    and _correlation(template_dx[ys, xs][support], current_dx[ys, xs][support]) >= 0.55):
-                accepted.append(((xs.start + xs.stop) / (2 * width), (ys.start + ys.stop) / (2 * height)))
-        if len(accepted) < max(10, int(np.ceil(len(self._tiles) * 0.45))) or len(accepted) < available * 0.6:
-            return False
-        support_points = np.asarray(accepted, dtype=np.float32)
+        count, reference_std, current_std, intensity = self._tile_stats(template, current, valid)
+        _, _, _, transverse = self._tile_stats(template_dx, current_dx, valid)
+        present = self._of_tiles(count / self._tile_area) >= 0.55
+        available = int(present.sum())
+        # Local centering and normalization make this insensitive to additive
+        # illumination and moderate contrast changes, without moving pixels.
+        # Horizontal fret bars can remain perfectly aligned after an unsafe
+        # width change. Require transverse texture (strings/wood/inlays) as
+        # independent evidence of lateral position and width as well.
+        accepted = (present & (self._of_tiles(reference_std) >= 2.0) & (self._of_tiles(current_std) >= 1.5)
+                    & (self._of_tiles(intensity) >= 0.72) & (self._of_tiles(transverse) >= 0.55))
+        support_points = np.ascontiguousarray(self._tile_centers[accepted])
+        counts = (len(support_points), available)
+        if len(support_points) < max(10, int(np.ceil(len(self._tiles) * 0.45))) or len(support_points) < available * 0.6:
+            return False, *counts
         # A hand can carry one matching patch or repeated frets; the unchanged
         # template must still be supported across both dimensions of the neck.
-        return bool(np.ptp(support_points, axis=0)[0] >= 0.7
-                    and np.ptp(support_points, axis=0)[1] >= 0.5
-                    and abs(cv2.contourArea(cv2.convexHull(support_points))) >= 0.28)
+        return (bool(np.ptp(support_points, axis=0)[0] >= 0.7
+                     and np.ptp(support_points, axis=0)[1] >= 0.5
+                     and abs(cv2.contourArea(cv2.convexHull(support_points))) >= 0.28), *counts)
 
     def refine(self, frame: np.ndarray, homography: np.ndarray, exclusion_mask=None) -> np.ndarray | None:
         """Correct small LK bias by direct alignment to the unchanged template.
@@ -303,18 +382,15 @@ class FretboardVisualReference:
         valid = self._canonical_valid(frame, homography, exclusion_mask).astype(np.uint8) * 255
         # The mask may miss a finger. Reject visibly different template tiles
         # too, instead of asking the dense optimizer to align that moving skin.
-        supported = np.zeros_like(valid)
-        supported_centers = []
-        for ys, xs in self._tiles:
-            selected = valid[ys, xs] > 0
-            if (selected.mean() >= .55
-                    and _correlation(self.template[ys, xs][selected], current[ys, xs][selected]) > .5
-                    and _correlation(self._template_dx[ys, xs][selected], current_dx[ys, xs][selected]) > .25):
-                supported[ys, xs] = valid[ys, xs]
-                supported_centers.append(((xs.start + xs.stop) / (2 * width), (ys.start + ys.stop) / (2 * height)))
-        if len(supported_centers) < max(10, int(np.ceil(len(self._tiles) * .45))):
+        visible = valid > 0
+        count, _, _, intensity = self._tile_stats(self.template, current, visible)
+        _, _, _, transverse = self._tile_stats(self._template_dx, current_dx, visible)
+        accepted = ((self._of_tiles(count / self._tile_area) >= .55)
+                    & (self._of_tiles(intensity) > .5) & (self._of_tiles(transverse) > .25))
+        supported = np.where(self._tile_image(accepted), valid, 0).astype(np.uint8)
+        centers = np.ascontiguousarray(self._tile_centers[accepted])
+        if len(centers) < max(10, int(np.ceil(len(self._tiles) * .45))):
             return fallback
-        centers = np.asarray(supported_centers, dtype=np.float32)
         if np.any(np.ptp(centers, axis=0) < (.7, .5)) or abs(cv2.contourArea(cv2.convexHull(centers))) < .28:
             return fallback
         supported = cv2.erode(supported, np.ones((5, 5), dtype=np.uint8))
@@ -364,16 +440,12 @@ class FretboardVisualReference:
             return {}
         current, dx, _ = self._canonical_image(frame, homography)
         valid = self._canonical_valid(frame, homography, exclusion_mask)
-        scores = {}
-        for index, (ys, xs) in enumerate(self._tiles):
-            use = valid[ys, xs]
-            if use.mean() < .6:
-                continue
-            intensity = _correlation(self.template[ys, xs][use], current[ys, xs][use])
-            transverse = _correlation(self._template_dx[ys, xs][use], dx[ys, xs][use])
-            if intensity >= .65 and transverse >= .4:
-                scores[index] = .5 * (intensity + transverse)
-        return scores
+        count, _, _, intensity = self._tile_stats(self.template, current, valid)
+        _, _, _, transverse = self._tile_stats(self._template_dx, dx, valid)
+        intensity, transverse = self._of_tiles(intensity), self._of_tiles(transverse)
+        accepted = (self._of_tiles(count / self._tile_area) >= .6) & (intensity >= .65) & (transverse >= .4)
+        return {int(index): float(.5 * (intensity[index] + transverse[index]))
+                for index in np.flatnonzero(accepted)}
 
     def select_pose(self, frame: np.ndarray, candidate: np.ndarray | None,
                     previous: np.ndarray, exclusion_mask=None) -> np.ndarray | None:
@@ -407,6 +479,21 @@ class FretboardVisualReference:
             return previous
         return candidate
 
+    def better_supported(self, frame: np.ndarray, first: np.ndarray, second: np.ndarray,
+                         exclusion_mask=None) -> np.ndarray:
+        """Of two validated poses, the one the same visible tiles match better.
+
+        Only tiles scored under both poses are compared, so neither wins by
+        covering a different part of the neck. ``first`` wins a tie.
+        """
+        first_scores = self._visible_tile_scores(frame, first, exclusion_mask)
+        second_scores = self._visible_tile_scores(frame, second, exclusion_mask)
+        common = set(first_scores).intersection(second_scores)
+        if not common:
+            return first
+        difference = sum(second_scores[index] - first_scores[index] for index in common)
+        return second if difference > 0 else first
+
     def tracking_exclusion(self, frame: np.ndarray, homography: np.ndarray,
                            exclusion_mask=None) -> np.ndarray:
         """Restrict new LK points to pixels matching the immutable neck image.
@@ -414,17 +501,20 @@ class FretboardVisualReference:
         This also works when MediaPipe misses a finger: a textured new hand must
         not become a source of neck features on the following frame.
         """
-        height, width = self.template.shape
         current, _, _ = self._canonical_image(frame, homography)
-        trusted = np.zeros((height, width), dtype=np.uint8)
         scores = self._visible_tile_scores(frame, homography, exclusion_mask)
-        for index in scores:
-            ys, xs = self._tiles[index]
-            first, second = self.template[ys, xs], current[ys, xs]
-            a = (first - first.mean()) / max(float(first.std()), 2.)
-            b = (second - second.mean()) / max(float(second.std()), 2.)
-            trusted[ys, xs] = np.where(abs(a - b) < .8, 255, 0).astype(np.uint8)
-        trusted[~self._template_valid] = 0
+        accepted = np.zeros(len(self._tiles), dtype=bool)
+        accepted[np.fromiter(scores, dtype=np.intp, count=len(scores))] = True
+        # Normalize every tile by its own mean and deviation, for all tiles at once.
+        centered = current.astype(np.float64)
+        centered -= centered.mean()
+        mean = _tile_sums(centered, self._row_starts, self._col_starts) / self._tile_area
+        variance = _tile_sums(centered * centered, self._row_starts, self._col_starts) / self._tile_area - mean * mean
+        deviation = np.maximum(np.sqrt(np.maximum(variance, 0.)), 2.)
+        expand = (self._row_of_y[:, None], self._col_of_x[None, :])
+        normalized = (centered - mean[expand]) / deviation[expand]
+        matching = np.abs(self._template_normalized - normalized) < .8
+        trusted = np.where(matching & self._tile_image(accepted) & self._template_valid, 255, 0).astype(np.uint8)
         # A whole local patch must be reliable, not just its center pixel.
         trusted = cv2.erode(trusted, np.ones((5, 5), dtype=np.uint8))
         into_image = homography @ np.linalg.inv(self._canonical_from_reference)

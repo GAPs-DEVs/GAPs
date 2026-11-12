@@ -1542,13 +1542,37 @@ def transform_line(line: DetectedLine, homography: np.ndarray) -> DetectedLine:
 
 
 def transform_grid(grid: StableFretboardGrid, homography: np.ndarray) -> StableFretboardGrid:
+    # Project every endpoint and crossing in one product; this runs several
+    # times per video frame. Same arithmetic as ``project_homography``.
+    lines = (grid.nut_line, *grid.ordered_fret_lines)
+    points = [point for line in lines for point in (line.p0, line.p1)]
+    points.extend(point for row in grid.string_crossings for point in row)
+    homogeneous = np.ones((len(points), 3), dtype=np.float32)
+    homogeneous[:, :2] = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    projected = homogeneous @ np.asarray(homography).T
+    degenerate = np.abs(projected[:, 2]) <= 1e-6
+    projected = projected[:, :2] / np.where(degenerate, 1.0, projected[:, 2])[:, None]
+    projected[degenerate] = 0.0
+    moved = [(float(x), float(y)) for x, y in projected.tolist()]
+    moved_lines = [
+        DetectedLine(
+            kind=line.kind,
+            p0=moved[2 * index],
+            p1=moved[2 * index + 1],
+            confidence=line.confidence,
+            endpoints_observed=line.endpoints_observed,
+        )
+        for index, line in enumerate(lines)
+    ]
+    crossings = []
+    offset = 2 * len(lines)
+    for row in grid.string_crossings:
+        crossings.append(tuple(moved[offset:offset + len(row)]))
+        offset += len(row)
     return StableFretboardGrid(
-        nut_line=transform_line(grid.nut_line, homography),
-        ordered_fret_lines=tuple(transform_line(line, homography) for line in grid.ordered_fret_lines),
-        string_crossings=tuple(
-            tuple(project_homography(homography, *point) for point in row)
-            for row in grid.string_crossings
-        ),
+        nut_line=moved_lines[0],
+        ordered_fret_lines=tuple(moved_lines[1:]),
+        string_crossings=tuple(crossings),
     )
 
 

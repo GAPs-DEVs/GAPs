@@ -53,6 +53,7 @@ class FrameRecord:
     capture_to_paint_ms: float | None = None
     ar_disappearance: bool = False
     completed_ar_gap_ms: float | None = None
+    tracking_detail: str = ''
 
 
 def percentile(values, percent):
@@ -139,6 +140,8 @@ class FramePerformanceMonitor:
             stats.inference_ms, stats.hand_mask_ms, stats.tracking_ms,
             stats.last_recovery_ms, stats.recovery_pending, stats.marker_count, stats.ar_expected,
             stats.captured_at, stats.capture_sequence, skipped, queue_ms,
+            # Absent on the instrumented ``main`` baseline worker.
+            tracking_detail=getattr(stats, 'tracking_detail', ''),
         )
         self.records.append(record)
         self._pending = record

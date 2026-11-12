@@ -88,3 +88,29 @@ def test_coarse_appearance_does_not_accept_a_wrong_fret_or_displaced_board():
     blurred = cv2.GaussianBlur(frame, (11, 11), 0)
     for matrix in (translation(12, 0), translation(0, 30)):
         assert not tracker.reference.validate(blurred, matrix, coarse=True)
+
+
+def test_one_unverified_frame_keeps_the_inter_frame_tracker_but_a_long_loss_clears_it(monkeypatch):
+    now = [10.]
+    monkeypatch.setattr('vision.fretboard_motion.monotonic', lambda: now[0])
+    frame, grid = scene()
+    tracker = make_tracker(frame, grid)
+    now[0] += 1 / 30
+    assert tracker.update(warp(frame, translation(1.5, .4)), lambda roi: ()).homography is not None
+
+    unrelated = np.random.default_rng(3).integers(0, 255, frame.shape, dtype=np.uint8)
+    now[0] += 1 / 30
+    lost = tracker.update(unrelated, lambda roi: ())
+    # The app draws no guides in hold mode.
+    assert lost.homography is None and lost.result.tracking_mode == 'selected_lines_hold'
+    assert tracker.motion.points is not None  # The next frame is still measured from the last verified one.
+    assert 'pose=none' in tracker.last_decision
+
+    now[0] += 1 / 30
+    back = tracker.update(warp(frame, translation(4.5, 1.2)), lambda roi: ())
+    assert back.homography is not None
+    assert 'inc=valid' in tracker.last_decision
+
+    now[0] += 1.
+    assert tracker.update(unrelated, lambda roi: ()).homography is None
+    assert tracker.motion.points is None

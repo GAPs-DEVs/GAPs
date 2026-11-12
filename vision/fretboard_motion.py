@@ -27,6 +27,8 @@ from vision.marker_visibility import filter_visible_markers
 
 
 ROI = tuple[int, int, int, int]
+# How long the inter-frame tracker survives without a verified pose.
+MOTION_RETENTION_SECONDS = .3
 Detector = Callable[[ROI | None], tuple[DetectedLine, ...]]
 
 
@@ -91,23 +93,30 @@ class FretboardMotionTracker:
         self.points: np.ndarray | None = None
         self.tracked_points: np.ndarray | None = None
         self.previous_exclusion_mask: np.ndarray | None = None
+        # Why the latest ``estimate`` returned no motion; diagnostics only.
+        self.last_rejection = ''
+
+    def _reject(self, reason: str) -> None:
+        self.last_rejection = reason
+        return None
 
     def estimate(self, frame: np.ndarray, grid: StableFretboardGrid | None, exclusion_mask=None,
                  *, initial_homography: np.ndarray | None = None) -> np.ndarray | None:
         self.tracked_points = None
+        self.last_rejection = ''
         gray = self._gray(frame)
         if (
             grid is None or not grid.ordered_fret_lines
             or self.previous_gray is None or self.previous_gray.shape != gray.shape
             or self.points is None or len(self.points) < 12
         ):
-            return None
+            return self._reject('no_points')
         initial_points = None
         flags = 0
         if initial_homography is not None:
             initial_points = cv2.perspectiveTransform(self.points, initial_homography)
             if not np.isfinite(initial_points).all():
-                return None
+                return self._reject('bad_hint')
             flags = cv2.OPTFLOW_USE_INITIAL_FLOW
         next_points, forward_status, errors = cv2.calcOpticalFlowPyrLK(
             self.previous_gray, gray, self.points, initial_points,
@@ -116,13 +125,13 @@ class FretboardMotionTracker:
             flags=flags,
         )
         if next_points is None or forward_status is None or errors is None:
-            return None
+            return self._reject('flow_failed')
         backward_points, backward_status, _ = cv2.calcOpticalFlowPyrLK(
             gray, self.previous_gray, next_points, self.points.copy() if flags else None,
             winSize=(21, 21), maxLevel=3, flags=flags,
         )
         if backward_points is None or backward_status is None:
-            return None
+            return self._reject('flow_failed')
         old = self.points.reshape(-1, 2)
         new = next_points.reshape(-1, 2)
         fb_error = np.linalg.norm(old - backward_points.reshape(-1, 2), axis=1)
@@ -136,44 +145,44 @@ class FretboardMotionTracker:
         good &= unmasked_points(old, self.previous_exclusion_mask) & unmasked_points(new, exclusion_mask)
         old, new = old[good], new[good]
         if len(old) < 12:
-            return None
+            return self._reject(f'few_tracked:{len(old)}')
         homography, inliers = cv2.findHomography(old, new, cv2.RANSAC, 2.0)
         if homography is None or inliers is None or not np.isfinite(homography).all():
-            return None
+            return self._reject('no_homography')
         keep = inliers.ravel().astype(bool)
         if keep.sum() < 12 or keep.mean() < 0.65:
-            return None
+            return self._reject(f'few_inliers:{int(keep.sum())}/{len(keep)}')
         old, new = old[keep], new[keep]
         quad = grid_quad(grid)
         area = abs(cv2.contourArea(quad))
         if area < 100 or abs(cv2.contourArea(cv2.convexHull(old))) < area * 0.18:
-            return None
+            return self._reject('small_coverage')
         # Reject tracks concentrated on a hand or one small patch of the neck.
         to_unit = cv2.getPerspectiveTransform(
             quad, np.asarray([(0, 0), (1, 0), (1, 1), (0, 1)], dtype=np.float32),
         )
         unit = cv2.perspectiveTransform(old.reshape(-1, 1, 2), to_unit).reshape(-1, 2)
         if np.any(np.ptp(unit, axis=0) < (0.45, 0.4)):
-            return None
+            return self._reject('narrow_spread')
         denominators = np.c_[quad, np.ones(4)] @ homography[2]
         if np.any(np.abs(denominators) < 1e-6) or np.any(denominators * denominators[0] <= 0):
-            return None
+            return self._reject('bad_perspective')
         moved = cv2.perspectiveTransform(quad.reshape(-1, 1, 2), homography).reshape(-1, 2)
         if not np.isfinite(moved).all() or not cv2.isContourConvex(moved):
-            return None
+            return self._reject('not_convex')
         if cv2.contourArea(quad, oriented=True) * cv2.contourArea(moved, oriented=True) <= 0:
-            return None
+            return self._reject('flipped')
         area_ratio = abs(cv2.contourArea(moved)) / area
         edges = np.linalg.norm(np.roll(quad, -1, axis=0) - quad, axis=1)
         moved_edges = np.linalg.norm(np.roll(moved, -1, axis=0) - moved, axis=1)
         ratios = moved_edges / np.maximum(edges, 1)
         if not 0.65 < area_ratio < 1.55 or np.any((ratios < 0.65) | (ratios > 1.5)):
-            return None
+            return self._reject('bad_scale')
         if np.max(np.linalg.norm(moved - quad, axis=1)) > max(100, float(edges.max()) * 0.4):
-            return None
+            return self._reject('too_far')
         projected = cv2.perspectiveTransform(old.reshape(-1, 1, 2), homography).reshape(-1, 2)
         if np.median(np.linalg.norm(projected - new, axis=1)) > 1.25:
-            return None
+            return self._reject('residual')
         self.tracked_points = new.reshape(-1, 1, 2)
         return homography
 
@@ -255,6 +264,10 @@ class HybridSelectedLineTracker:
         self._async_descriptor_frame = -1
         self.last_recovery_ms = 0.
         self.last_recovery_error = None
+        # How the latest frame's pose was decided; never read by tracking.
+        self.last_decision = ''
+        # This frame's flow poses that failed only the full-detail image check.
+        self._flow_candidates = ()
 
     def close(self) -> None:
         if self.recovery is not None:
@@ -287,22 +300,41 @@ class HybridSelectedLineTracker:
         pose = self.coarse_motion.estimate(
             frame, self.anchor_grid, exclusion_mask, initial_homography=self.last_pose,
         )
-        if pose is None:
-            return None
-        old = grid_quad(transform_grid(self.anchor_grid, self.last_pose))
-        new_grid = transform_grid(self.anchor_grid, pose)
-        new = grid_quad(new_grid)
-        short_edge = min(np.linalg.norm(old[1] - old[0]), np.linalg.norm(old[2] - old[3]))
-        if (not valid_board_projection(new_grid, frame.shape)
-                or np.max(np.linalg.norm(new - old, axis=1)) > max(12., short_edge * .12)):
-            return None
-        return pose if self.reference.validate(frame, pose, exclusion_mask, coarse=True) else None
+        if pose is not None:
+            old = grid_quad(transform_grid(self.anchor_grid, self.last_pose))
+            new_grid = transform_grid(self.anchor_grid, pose)
+            new = grid_quad(new_grid)
+            short_edge = min(np.linalg.norm(old[1] - old[0]), np.linalg.norm(old[2] - old[3]))
+            if (valid_board_projection(new_grid, frame.shape)
+                    and np.max(np.linalg.norm(new - old, axis=1)) <= max(12., short_edge * .12)
+                    and self.reference.validate(frame, pose, exclusion_mask, coarse=True)):
+                return pose
+        # Motion blur softens every tile at once, so a correct pose from this
+        # frame's own optical flow can miss the full-detail image check for a
+        # few frames. Such a pose is fresh geometric evidence; accept it when
+        # the neck still matches at the blur's own scale, within the same
+        # frame and time limits as any other continuity.
+        for candidate in self._flow_candidates:
+            if (np.isfinite(candidate).all()
+                    and valid_board_projection(transform_grid(self.anchor_grid, candidate), frame.shape)
+                    and self.reference.validate(frame, candidate, exclusion_mask, coarse=True)):
+                return candidate
+        return None
 
     def _verified(self, frame, pose, exclusion_mask):
         if pose is None or not np.isfinite(pose).all():
             return False
         projected = transform_grid(self.anchor_grid, pose)
         return valid_board_projection(projected, frame.shape) and self.reference.validate(frame, pose, exclusion_mask)
+
+    def _describe(self, frame, pose, exclusion_mask, motion) -> str:
+        """Outcome of one flow estimate: no motion, rejected image check, or valid."""
+        if pose is None:
+            return f'none({motion.last_rejection})'
+        if not np.isfinite(pose).all() or not valid_board_projection(transform_grid(self.anchor_grid, pose), frame.shape):
+            return 'invalid(projection)'
+        valid, accepted, visible = self.reference.validation_support(frame, pose, exclusion_mask)
+        return f"{'valid' if valid else 'invalid'}({accepted}/{visible})"
 
     def _clear_recovery(self):
         self.pending_recovery = None
@@ -450,8 +482,12 @@ class HybridSelectedLineTracker:
                                 prediction @ self.last_pose if prediction is not None else self.last_pose),
         )
         anchor_valid = self._verified(frame, anchor_pose, exclusion_mask)
+        decision = [f'inc={self._describe(frame, incremental_pose, exclusion_mask, self.motion)}',
+                    f'anchor={self._describe(frame, anchor_pose, exclusion_mask, self.anchor_motion)}']
         pose = anchor_pose if anchor_valid else incremental_pose if incremental_valid else None
         directly_aligned = False
+        disagreed = False
+        identity_unclear = False
         if pose is None:
             # Small LK bias may sit outside strict photometric acceptance while
             # enough distributed texture remains for bounded direct alignment.
@@ -468,10 +504,27 @@ class HybridSelectedLineTracker:
             second = grid_quad(transform_grid(self.anchor_grid, incremental_pose))
             lines = (previous_grid.nut_line, *previous_grid.ordered_fret_lines)
             centers = np.asarray([(np.asarray(line.p0) + line.p1) / 2 for line in lines])
-            tolerance = max(1.0, float(np.min(np.linalg.norm(np.diff(centers, axis=0), axis=1))) * .2)
-            if np.max(np.linalg.norm(first - second, axis=1)) >= tolerance:
-                pose = None  # Resolve disagreement from descriptors, not fret repetitions.
+            spacing = float(np.min(np.linalg.norm(np.diff(centers, axis=0), axis=1)))
+            tolerance = max(1.0, spacing * .2)
+            gap = float(np.max(np.linalg.norm(first - second, axis=1)))
+            if gap >= tolerance:
+                decision.append(f'disagree={gap:.1f}/{tolerance:.1f}')
+                if gap < spacing * .5:
+                    # Both poses matched the reference image and differ by less
+                    # than half the narrowest fret interval, so they cannot be
+                    # different frets: this is flow noise on a moving neck, not
+                    # an identity question. Keep the better supported one and
+                    # let direct alignment settle the remainder below.
+                    pose = self.reference.better_supported(frame, anchor_pose, incremental_pose, exclusion_mask)
+                    disagreed = True
+                else:
+                    pose = None  # Resolve disagreement from descriptors, not fret repetitions.
+                    identity_unclear = True
 
+        # Two validated but far apart poses are an identity question; blur
+        # tolerance must not answer it.
+        self._flow_candidates = () if identity_unclear else tuple(
+            candidate for candidate in (anchor_pose, incremental_pose) if candidate is not None)
         recovered = continuity = False
         if self.recovery is not None:
             pose, recovered, continuity = self._background_pose(frame, pose, timestamp, exclusion_mask)
@@ -494,18 +547,32 @@ class HybridSelectedLineTracker:
         elif self.recovery is None and pose is None:
             self._clear_recovery()
 
+        if directly_aligned and not recovered:
+            decision.append('aligned')
+        if recovered:
+            decision.append('recovered')
+        if continuity:
+            decision.append('continuity')
         # Both flow paths still have to pass the immutable-image checks and
         # agree geometrically on EVERY frame. When they do, a dense ECC solve
         # is only a periodic subpixel correction, not evidence needed to track.
         # Recovery and uncertain flow retain immediate direct refinement.
-        needs_refinement = recovered or not (anchor_valid and incremental_valid) or self.frame_index % 5 == 0
+        needs_refinement = (recovered or disagreed or not (anchor_valid and incremental_valid)
+                            or self.frame_index % 5 == 0)
         if pose is not None and not continuity and not directly_aligned and needs_refinement:
             pose = self.reference.refine(frame, pose, exclusion_mask)
 
         # Revalidate the last pose against this frame before allowing a hand to
         # nudge the neck. This is fresh visual evidence, not a stale-pose hold.
         if not continuity:
+            proposed = pose
             pose = self.reference.select_pose(frame, pose, self.last_pose, exclusion_mask)
+            if proposed is not None and pose is None:
+                decision.append('select=dropped')
+            elif proposed is not None and pose is not proposed:
+                decision.append('select=kept_previous')
+            elif proposed is None and pose is not None:
+                decision.append('select=previous_still_valid')
         if pose is None and self.recovery is None:
             candidate = self._brief_continuity(frame, exclusion_mask)
             if candidate is not None:
@@ -516,8 +583,14 @@ class HybridSelectedLineTracker:
         # redefining geometry when fingers produce convincing false segments.
         run_detector = diagnostics and (self.frame_index % 3 == 1 or pose is None)
         actual = tuple(detect(self.tracker.search_roi(frame.shape))) if run_detector else ()
+        self.last_decision = ' '.join((*decision, 'pose=ok' if pose is not None else 'pose=none'))
         if pose is None:
-            self.motion.clear()
+            # The inter-frame tracker still describes the last verified frame
+            # and pose. Keep it through a short failure so the next frame can
+            # be measured from there; any pose it yields must pass the same
+            # reference checks. Nothing is drawn from it in the meantime.
+            if monotonic() - self.last_verified_at > MOTION_RETENTION_SECONDS:
+                self.motion.clear()
             self.predictor.clear()
             self.was_visible = False
             held = self.tracker.hold_or_lose()
