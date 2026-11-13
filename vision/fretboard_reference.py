@@ -552,13 +552,11 @@ class FretboardVisualReference:
         keypoints, descriptors = self._sift.detectAndCompute(gray, mask)
         if descriptors is None or len(keypoints) < 12:
             return None
-        matcher = cv2.BFMatcher(cv2.NORM_L2)
-        forward = matcher.knnMatch(self._reference_descriptors, descriptors, k=2)
-        backward = matcher.knnMatch(descriptors, self._reference_descriptors, k=2)
-        reverse = {pair[0].queryIdx: pair[0].trainIdx for pair in backward
-                   if len(pair) == 2 and pair[0].distance < 0.75 * pair[1].distance}
-        matches = [pair[0] for pair in forward if len(pair) == 2 and pair[0].distance < 0.75 * pair[1].distance
-                   and reverse.get(pair[0].trainIdx) == pair[0].queryIdx]
+        # Mutual nearest neighbours, without a ratio test. Frets repeat, so the
+        # second-best descriptor is nearly as close as the best and a ratio
+        # test discards most correct matches along with the wrong ones. The
+        # robust fit below is what separates them.
+        matches = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True).match(self._reference_descriptors, descriptors)
         if len(matches) < 12:
             return None
         old = self._reference_points[[match.queryIdx for match in matches]]
@@ -567,13 +565,30 @@ class FretboardVisualReference:
         scale = np.asarray((gray.shape[1] / crop_width, gray.shape[0] / crop_height), dtype=np.float32)
         new = (np.asarray([keypoints[match.trainIdx].pt for match in matches], dtype=np.float32)
                / scale + np.asarray((left, top), dtype=np.float32))
-        homography, inliers = cv2.findHomography(old, new, cv2.RANSAC, 2.0, maxIters=2500, confidence=0.995)
+        homography, inliers = cv2.findHomography(old, new, cv2.USAC_MAGSAC, 2.0, maxIters=10000, confidence=0.995)
         if homography is None or inliers is None:
             return None
         keep = inliers.ravel().astype(bool)
-        if keep.sum() < 12 or keep.mean() < 0.65:
+        # No inlier-ratio requirement: with repeating frets most matches being
+        # outliers is normal for a correct pose (a 65% requirement once left a
+        # plainly visible neck unfound for many seconds). The pose is accepted
+        # on what follows instead: where the inliers lie on the neck, their
+        # residual, and the image comparison with the calibration reference.
+        if keep.sum() < 12:
             return None
         old, new = old[keep], new[keep]
+        # Least-squares fits over the agreed matches, the second one over
+        # those within a pixel, for sub-pixel accuracy.
+        for limit in (None, 1.):
+            if limit is not None:
+                error = np.linalg.norm(cv2.perspectiveTransform(old[:, None], homography).reshape(-1, 2) - new, axis=1)
+                if (error < limit).sum() < 12:
+                    break
+                old, new = old[error < limit], new[error < limit]
+            refit, _ = cv2.findHomography(old, new, 0)
+            if refit is None or not np.isfinite(refit).all():
+                break
+            homography = refit
         height, width = self.template.shape
         canonical = cv2.perspectiveTransform(old[:, None], self._canonical_from_reference).reshape(-1, 2) / (width - 1, height - 1)
         if np.any(np.ptp(canonical, axis=0) < (0.55, 0.5)) or abs(cv2.contourArea(cv2.convexHull(canonical.astype(np.float32)))) < 0.25:

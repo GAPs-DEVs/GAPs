@@ -635,7 +635,8 @@ class MainWindow(QMainWindow):
             elif stats.tracking_mode in {"selected_lines_tracking", "selected_lines_reacquired"}:
                 self.video_status_label.setText("지판 맞춤 완료")
                 self.tracking_panel.hint_label.setText("지판 맞춤 완료 · 연습을 시작하세요.")
-            elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity"}:
+            elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity",
+                                         "selected_lines_predicted"}:
                 self.video_status_label.setText("지판 움직임 추적 중")
             elif stats.tracking_mode == "selected_lines_hold":
                 self.video_status_label.setText("지판을 다시 찾는 중")

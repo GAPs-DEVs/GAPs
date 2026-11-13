@@ -29,6 +29,20 @@ from vision.marker_visibility import filter_visible_markers
 ROI = tuple[int, int, int, int]
 # How long the inter-frame tracker survives without a verified pose.
 MOTION_RETENTION_SECONDS = .3
+# Guides may follow the last measured velocity for this many unverified frames,
+# slowing by COAST_DECAY each frame. Sustained motion blur hides the neck for a
+# few frames at a time; blanking the guides for that long reads as flicker.
+# On recorded fast motion the predicted corners were off by a median of 6 px
+# after one frame and 12 px after two, but 20 px and 28 px after three and
+# four, which is more than a fret at the narrow end of the neck.
+COAST_FRAMES = 2
+COAST_DECAY = .8
+COAST_MAX_FRAME_GAP = .1
+# A prediction is drawn only while optical flow still follows this many points
+# of the neck consistently in both directions, even though they no longer
+# yield a verified pose. A neck that has left the image, or a blank frame,
+# keeps no such points and hides the guides at once.
+COAST_MIN_TRACKED = 12
 Detector = Callable[[ROI | None], tuple[DetectedLine, ...]]
 
 
@@ -95,6 +109,8 @@ class FretboardMotionTracker:
         self.previous_exclusion_mask: np.ndarray | None = None
         # Why the latest ``estimate`` returned no motion; diagnostics only.
         self.last_rejection = ''
+        # Points the latest ``estimate`` followed forward and back consistently.
+        self.last_tracked = 0
 
     def _reject(self, reason: str) -> None:
         self.last_rejection = reason
@@ -104,6 +120,7 @@ class FretboardMotionTracker:
                  *, initial_homography: np.ndarray | None = None) -> np.ndarray | None:
         self.tracked_points = None
         self.last_rejection = ''
+        self.last_tracked = 0
         gray = self._gray(frame)
         if (
             grid is None or not grid.ordered_fret_lines
@@ -144,6 +161,7 @@ class FretboardMotionTracker:
         )
         good &= unmasked_points(old, self.previous_exclusion_mask) & unmasked_points(new, exclusion_mask)
         old, new = old[good], new[good]
+        self.last_tracked = len(old)
         if len(old) < 12:
             return self._reject(f'few_tracked:{len(old)}')
         homography, inliers = cv2.findHomography(old, new, cv2.RANSAC, 2.0)
@@ -266,6 +284,12 @@ class HybridSelectedLineTracker:
         self.last_recovery_error = None
         # How the latest frame's pose was decided; never read by tracking.
         self.last_decision = ''
+        # Last drawn board corners with their time and velocity, for coasting.
+        self._drawn_quad: np.ndarray | None = None
+        self._drawn_at: float | None = None
+        self._drawn_pose = np.eye(3)
+        self._velocity: np.ndarray | None = None
+        self._coast_frames = 0
         # This frame's flow poses that failed only the full-detail image check.
         self._flow_candidates = ()
 
@@ -335,6 +359,45 @@ class HybridSelectedLineTracker:
             return 'invalid(projection)'
         valid, accepted, visible = self.reference.validation_support(frame, pose, exclusion_mask)
         return f"{'valid' if valid else 'invalid'}({accepted}/{visible})"
+
+    def _note_drawn(self, quad: np.ndarray, pose: np.ndarray, timestamp: float) -> None:
+        """Record a measured pose that was drawn, and the velocity leading to it."""
+        elapsed = timestamp - self._drawn_at if self._drawn_at is not None else None
+        # A velocity needs two consecutive measured frames. One that follows a
+        # coasted or hidden frame would mix a prediction into the estimate.
+        measured = self._coast_frames == 0 and self.was_visible and self._drawn_quad is not None
+        self._velocity = ((quad - self._drawn_quad) / elapsed
+                          if measured and elapsed is not None and .005 <= elapsed <= COAST_MAX_FRAME_GAP else None)
+        self._drawn_quad, self._drawn_pose, self._drawn_at = quad, pose, timestamp
+        self._coast_frames = 0
+
+    def _coast(self, frame, timestamp, exclusion_mask, actual) -> HybridTrackingFrame | None:
+        """Carry the guides along their last measured velocity for a few frames.
+
+        This is a prediction, not a measurement. It is drawn only: the verified
+        pose, the flow trackers and the reference are left exactly as they
+        were, so a prediction can never become the basis of later tracking.
+        """
+        if self._velocity is None or self._coast_frames >= COAST_FRAMES or self._drawn_at is None:
+            return None
+        if max(self.motion.last_tracked, self.anchor_motion.last_tracked) < COAST_MIN_TRACKED:
+            return None
+        elapsed = timestamp - self._drawn_at
+        if not 0 < elapsed <= COAST_MAX_FRAME_GAP:
+            return None
+        velocity = self._velocity * COAST_DECAY
+        quad = (self._drawn_quad + velocity * elapsed).astype(np.float32)
+        if not np.isfinite(quad).all() or not cv2.isContourConvex(quad):
+            return None
+        pose = cv2.getPerspectiveTransform(grid_quad(self.anchor_grid), quad)
+        grid = transform_grid(self.anchor_grid, pose)
+        if not np.isfinite(pose).all() or not valid_board_projection(grid, frame.shape):
+            return None
+        relative = pose @ np.linalg.inv(self._drawn_pose)
+        self._velocity, self._drawn_quad, self._drawn_pose, self._drawn_at = velocity, quad, pose, timestamp
+        self._coast_frames += 1
+        result = SelectedTrackingResult(grid, (grid.nut_line, grid.ordered_fret_lines[-1]), 'selected_lines_predicted')
+        return HybridTrackingFrame(result, actual, (), relative, exclusion_mask)
 
     def _clear_recovery(self):
         self.pending_recovery = None
@@ -535,6 +598,14 @@ class HybridSelectedLineTracker:
             if self._verified(frame, candidate, exclusion_mask):
                 pose = candidate
                 recovered = True
+                # A descriptor pose found in a blurred image is about a pixel
+                # off; blur-tolerant flow from the last pose is sub-pixel.
+                # Where both see the same place, draw the flow's.
+                flow = self._brief_continuity(frame, exclusion_mask)
+                if flow is not None and np.max(np.linalg.norm(
+                        grid_quad(transform_grid(self.anchor_grid, flow))
+                        - grid_quad(transform_grid(self.anchor_grid, pose)), axis=1)) < 3:
+                    pose = flow
         if self.recovery is None and pose is not None and recovered:
             candidate_grid = transform_grid(self.anchor_grid, pose)
             jump = np.max(np.linalg.norm(grid_quad(candidate_grid) - grid_quad(previous_grid), axis=1))
@@ -593,6 +664,11 @@ class HybridSelectedLineTracker:
                 self.motion.clear()
             self.predictor.clear()
             self.was_visible = False
+            coasted = self._coast(frame, timestamp, exclusion_mask, actual)
+            if coasted is not None:
+                self.last_decision += ' predicted'
+                return coasted
+            self._velocity = None
             held = self.tracker.hold_or_lose()
             return HybridTrackingFrame(held, actual, (), None, exclusion_mask)
 
@@ -603,6 +679,7 @@ class HybridSelectedLineTracker:
         self.tracker.accept_registered_grid(grid)
         mode = ('selected_lines_continuity' if continuity else
                 'selected_lines_reacquired' if recovered or not self.was_visible else 'selected_lines_motion')
+        self._note_drawn(grid_quad(grid), pose, timestamp)
         if continuity or recovered or not self.was_visible:
             self.predictor.clear()
         if not continuity:

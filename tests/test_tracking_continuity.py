@@ -114,3 +114,57 @@ def test_one_unverified_frame_keeps_the_inter_frame_tracker_but_a_long_loss_clea
     now[0] += 1.
     assert tracker.update(unrelated, lambda roi: ()).homography is None
     assert tracker.motion.points is None
+
+
+def _moving_tracker(steps=4):
+    frame, grid = scene()
+    tracker = make_tracker(frame, grid)
+    for index in range(1, steps + 1):
+        result = tracker.update(warp(frame, translation(index * 6., index * 2.)), lambda roi: (), timestamp=index / 30)
+        assert result.result.tracking_mode == 'selected_lines_motion'
+    return frame, tracker, result
+
+
+def _flow_follows_points_without_a_pose(tracker):
+    """Flow still follows the neck's points, as in motion blur, but yields no pose."""
+    for motion in (tracker.motion, tracker.anchor_motion):
+        def estimate(*args, motion=motion, **kwargs):
+            motion.last_tracked = 40
+            return None
+        motion.estimate = estimate
+
+
+def test_brief_unverified_motion_is_drawn_from_velocity_then_hidden():
+    frame, tracker, last = _moving_tracker()
+    verified_pose = tracker.last_pose.copy()
+    _flow_follows_points_without_a_pose(tracker)
+    before = grid_quad(last.result.stable_grid)
+    unreadable = np.zeros_like(frame)
+
+    first = tracker.update(unreadable, lambda roi: (), timestamp=5 / 30)
+    assert first.result.tracking_mode == 'selected_lines_predicted'
+    assert first.homography is not None
+    # One frame further along the measured (6, 2) px per frame motion, slowed by the decay.
+    np.testing.assert_allclose(grid_quad(first.result.stable_grid) - before, np.tile((4.8, 1.6), (4, 1)), atol=.5)
+
+    second = tracker.update(unreadable, lambda roi: (), timestamp=6 / 30)
+    assert second.result.tracking_mode == 'selected_lines_predicted'
+    third = tracker.update(unreadable, lambda roi: (), timestamp=7 / 30)
+    assert third.homography is None and third.result.tracking_mode == 'selected_lines_hold'
+    # A prediction is only drawn; it never becomes the tracked pose.
+    np.testing.assert_array_equal(tracker.last_pose, verified_pose)
+
+
+def test_prediction_is_not_drawn_when_flow_follows_nothing():
+    frame, tracker, _ = _moving_tracker()
+    gone = tracker.update(np.zeros_like(frame), lambda roi: (), timestamp=5 / 30)
+    assert gone.homography is None and gone.result.tracking_mode == 'selected_lines_hold'
+
+
+def test_prediction_needs_a_measured_velocity():
+    frame, grid = scene()
+    tracker = make_tracker(frame, grid)
+    tracker.update(warp(frame, translation(6., 2.)), lambda roi: (), timestamp=1 / 30)
+    _flow_follows_points_without_a_pose(tracker)
+    result = tracker.update(np.zeros_like(frame), lambda roi: (), timestamp=2 / 30)
+    assert result.result.tracking_mode == 'selected_lines_hold'
