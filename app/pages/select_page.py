@@ -1,5 +1,7 @@
 import json
 import os
+from pathlib import Path
+import shutil
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -19,6 +21,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 import guitarpro
 
 from app.api_client import api_client
+from app.features.score_library import RemoveScoreThread
 
 MEASURES_PER_SCORE_LINE = 4
 STEPS_PER_FALLBACK_SCORE_LINE = 16
@@ -151,12 +154,16 @@ class ParsingThread(QThread):
 
 class ScoreCard(QFrame):
     """중앙 갤러리에 들어갈 개별 곡 카드"""
-    def __init__(self, song_title, file_path, on_practice_cb, on_edit_cb):
+    def __init__(self, song_title, file_path, on_practice_cb, on_edit_cb,
+                 on_remove_cb=None, score_id=None, is_default=None):
         super().__init__()
         self.song_title = song_title
         self.file_path = file_path
         self.on_practice_cb = on_practice_cb
         self.on_edit_cb = on_edit_cb
+        self.on_remove_cb = on_remove_cb
+        self.score_id = score_id
+        self.is_default = is_default
         self.init_ui()
 
     def init_ui(self):
@@ -196,13 +203,29 @@ class ScoreCard(QFrame):
         try:
             with open(self.file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                note_count = len(data)
+                note_count = len(data.get("notes", [])) if isinstance(data, dict) else len(data)
         except Exception:
             pass
 
         lbl_meta = QLabel(f"{note_count} Notes")
         lbl_meta.setStyleSheet("font-size: 11px; color: #94a3b8; font-weight: 600;")
         top_box.addWidget(lbl_meta)
+        self.remove_button = QPushButton("삭제")
+        self.remove_button.setCursor(Qt.PointingHandCursor)
+        self.remove_button.setStyleSheet("""
+            QPushButton { background-color: #dc2626; color: #ffffff;
+                border: none; border-radius: 5px; padding: 5px 8px; font-weight: 700; }
+            QPushButton:hover { background-color: #b91c1c; }
+            QPushButton:disabled { background-color: #e5e7eb; color: #6b7280; }
+        """)
+        self.remove_button.setEnabled(bool(self.score_id) and self.is_default is not True
+                                      and self.on_remove_cb is not None)
+        self.remove_button.setToolTip(
+            "개인 악보함에서 제거" if self.remove_button.isEnabled()
+            else "기본 악보 또는 서버 등록 정보를 확인할 수 없는 로컬 악보입니다."
+        )
+        self.remove_button.clicked.connect(lambda: self.on_remove_cb(self))
+        top_box.addWidget(self.remove_button)
         layout.addLayout(top_box)
 
         # 곡 제목
@@ -258,6 +281,7 @@ class SelectPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        self.remove_thread = None
 
         # 프로젝트 루트 기준 data/cached_scores 전용 캐시 폴더 설정
         current_dir = os.path.dirname(os.path.abspath(__file__))  # app/pages/
@@ -486,21 +510,37 @@ class SelectPage(QWidget):
 
         self.cards = []
         if os.path.exists(self.db_mock_dir):
-            files = [f for f in os.listdir(self.db_mock_dir) if f.endswith("_parsed.json")]
+            directory = Path(self.db_mock_dir)
+            files = list(directory.glob("*_parsed.json"))
+            files.extend((directory / "server").glob("*_parsed.json"))
             files.sort()
 
             self.lbl_count.setText(f"총 {len(files)}개의 악보")
 
             columns = 2  # 우측 패널이 있으므로 좌측은 2열 카드가 시각적으로 가장 안정적임
             for idx, file in enumerate(files):
-                song_title = file.replace("_parsed.json", "")
-                file_path = os.path.join(self.db_mock_dir, file)
+                song_title = file.name.replace("_parsed.json", "")
+                file_path = str(file)
+                metadata = {}
+                if file.parent == directory / "server":
+                    try:
+                        metadata_path = file.parent / file.name.replace("_parsed.json", ".meta.json")
+                        with metadata_path.open(encoding="utf-8") as cached_file:
+                            data = json.load(cached_file)
+                        if isinstance(data, dict) and data.get("cache_source") == "server":
+                            metadata = data
+                            song_title = data.get("title") or song_title
+                    except (OSError, ValueError):
+                        pass
 
                 card = ScoreCard(
                     song_title=song_title,
                     file_path=file_path,
                     on_practice_cb=self.launch_practice_by_path,
                     on_edit_cb=self.go_to_admin_by_path,
+                    on_remove_cb=self.remove_score,
+                    score_id=metadata.get("score_id"),
+                    is_default=metadata.get("is_default"),
                 )
                 card.setFixedWidth(275)
 
@@ -508,6 +548,38 @@ class SelectPage(QWidget):
                 col = idx % columns
                 self.grid_layout.addWidget(card, row, col)
                 self.cards.append((song_title.lower(), card))
+
+    def remove_score(self, card):
+        if self.remove_thread is not None:
+            return
+        if not api_client.access_token:
+            QMessageBox.warning(self, "로그인 필요", "로그인 후 악보를 삭제할 수 있습니다.")
+            return
+        if not card.score_id or card.is_default is True:
+            return
+        answer = QMessageBox.question(
+            self, "악보 삭제", f"'{card.song_title}' 악보를 개인 악보함에서 삭제하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.remove_thread = RemoveScoreThread(
+            card.score_id, card.file_path, self.db_mock_dir, self,
+        )
+        self.remove_thread.finished.connect(self.on_score_removed)
+        self.setEnabled(False)
+        self.remove_thread.start()
+
+    def on_score_removed(self):
+        worker = self.remove_thread
+        self.remove_thread = None
+        self.setEnabled(True)
+        self.refresh_song_list()
+        self.filter_song_cards(self.search_input.text())
+        if worker.message:
+            QMessageBox.warning(self, "악보 삭제 결과", worker.message)
+        worker.deleteLater()
 
     def filter_song_cards(self, text):
         query = text.strip().lower()
@@ -577,10 +649,10 @@ class SelectPage(QWidget):
     def sync_with_server(self):
         """로그인 후 서버의 최신 악보 목록과 동기화"""
         success, result = api_client.sync_scores(self.db_mock_dir)
+        self.refresh_song_list()
         if success:
             if result > 0:
                 print(f"[동기화 성공] 서버로부터 {result}개의 신규 악보를 다운로드했습니다.")
-                self.refresh_song_list()
             else:
                 print("[동기화 확인] 로컬 악보 보관함이 최신 상태입니다.")
         else:
@@ -640,7 +712,15 @@ class SelectPage(QWidget):
                     )
 
                     if up_ok:
-                        message += f"\n\n[클라우드 동기화 완료]\n서버 악보 보관함에 안전하게 등록되었습니다."
+                        message += "\n\n[클라우드 업로드 완료]"
+                        score = up_res.get("score", up_res)
+                        api_client.cache_server_score(
+                            self.db_mock_dir, score.get("score_id") or score.get("id"),
+                            score.get("title", clean_title), parsed_data, is_default=False,
+                        )
+                        # This is the parser's generated cache, not the selected source file.
+                        os.unlink(output_json_path)
+                        message += "\n서버 악보 보관함에 안전하게 등록되었습니다."
                     else:
                         message += f"\n\n[로컬 저장 완료 / 서버 업로드 실패]\n{up_res}"
 

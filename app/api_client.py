@@ -1,6 +1,9 @@
 # app/api_client.py
 import json
 import os
+from pathlib import Path
+import tempfile
+from uuid import UUID
 import urllib3
 import requests
 
@@ -26,6 +29,65 @@ class APIClient:
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
         return headers
+
+    def remove_library_score(self, score_id: str):
+        """Remove the signed-in user's library entry; 204 has no JSON body."""
+        if not self.access_token:
+            return False, "로그인 후 악보를 삭제할 수 있습니다."
+        try:
+            score_id = str(UUID(str(score_id)))
+        except (ValueError, TypeError, AttributeError):
+            return False, "서버 악보 ID를 확인할 수 없습니다. 다시 동기화해주세요."
+
+        try:
+            res = requests.delete(
+                f"{self.base_url}/api/me/scores/{score_id}",
+                headers={"Authorization": f"Bearer {self.access_token}"},
+                verify=False,
+                timeout=5,
+            )
+            if res.status_code == 204:
+                return True, ""
+            messages = {
+                401: "로그인이 만료되었습니다. 다시 로그인해주세요.",
+                403: "계정 상태 또는 접근 권한을 확인해주세요.",
+                404: "삭제 API 또는 악보 ID를 찾을 수 없습니다.",
+                405: "서버에서 악보 삭제 요청을 지원하지 않습니다.",
+                503: "서버 DB에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.",
+            }
+            return False, messages.get(res.status_code, f"악보 삭제 실패 (HTTP {res.status_code})")
+        except requests.RequestException:
+            return False, "삭제 응답을 받지 못했습니다. 연결을 확인한 뒤 다시 시도해주세요."
+
+    def cache_server_score(self, local_save_dir, score_id, title, notes, is_default=None):
+        """Keep server identity separate from locally imported scores."""
+        score_id = str(UUID(str(score_id)))
+        directory = Path(local_save_dir) / "server"
+        if directory.is_symlink():
+            raise ValueError("서버 캐시 디렉터리는 심볼릭 링크를 사용할 수 없습니다.")
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{score_id}_parsed.json"
+        metadata_path = directory / f"{score_id}.meta.json"
+        if not isinstance(is_default, bool) and metadata_path.exists():
+            previous = json.loads(metadata_path.read_text(encoding="utf-8"))
+            is_default = previous.get("is_default") if isinstance(previous, dict) else None
+        metadata = {
+            "cache_source": "server",
+            "score_id": score_id,
+            "title": title,
+            "is_default": is_default if isinstance(is_default, bool) else None,
+        }
+        for destination, payload in ((path, notes), (metadata_path, metadata)):
+            temporary_path = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as file:
+                    temporary_path = Path(file.name)
+                    json.dump(payload, file, indent=2, ensure_ascii=False)
+                os.replace(temporary_path, destination)
+            finally:
+                if temporary_path is not None and temporary_path.exists():
+                    temporary_path.unlink()
+        return str(path)
 
     def login_with_google_id_token(self, google_id_token: str):
         """구글 ID 토큰으로 백엔드 JWT 토큰 발급"""
@@ -197,22 +259,19 @@ class APIClient:
                     if not raw_title:
                         continue
 
-                    safe_title = (
-                        "".join(
-                            c
-                            for c in raw_title
-                            if c.isalnum() or c in (" ", "_", "-")
-                        )
-                        .rstrip()
-                        .lower()
-                    )
-                    filename = f"{safe_title}_parsed.json"
-                    local_path = os.path.join(local_save_dir, filename)
+                    score_id = str(UUID(str(item["score_id"])))
+                    safe_title = raw_title
+                    local_path = Path(local_save_dir) / "server" / f"{score_id}_parsed.json"
 
-                    if os.path.exists(local_path):
+                    # Keep the original skip-download behavior and retain server identity.
+                    if local_path.exists():
+                        with local_path.open(encoding="utf-8") as file:
+                            notes = json.load(file)
+                        self.cache_server_score(
+                            local_save_dir, score_id, raw_title, notes, item.get("is_default"),
+                        )
                         continue
 
-                    score_id = item.get("score_id")
                     version_id = item.get("selected_version_id")
                     notes_data = item.get("data")
 
@@ -253,10 +312,11 @@ class APIClient:
                     if notes_data is None:
                         notes_data = []
 
-                    with open(local_path, "w", encoding="utf-8") as f:
-                        json.dump(notes_data, f, indent=2, ensure_ascii=False)
+                    self.cache_server_score(
+                        local_save_dir, score_id, raw_title, notes_data, item.get("is_default"),
+                    )
                     download_count += 1
-                    print(f"[동기화 저장 완료] {filename}")
+                    print(f"[동기화 저장 완료] {score_id}")
 
                 print(
                     f"[동기화] 총 {len(score_items)}개의 서버 악보 중 신규 {download_count}개 반영 완료"

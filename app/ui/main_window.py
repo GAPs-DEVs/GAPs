@@ -1092,6 +1092,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """창 닫을 때 리소스 정리 및 연습 기록 서버 전송"""
+        if self.select_page.remove_thread is not None:
+            QMessageBox.information(self, "악보 삭제 중", "삭제 요청이 끝난 후 프로그램을 종료해주세요.")
+            event.ignore()
+            return
         # 1. 연습 기록 서버 전송 (워커 정지 전 안전하게 전송)
         if getattr(self, "recorder", None):
             active_ms = 0
