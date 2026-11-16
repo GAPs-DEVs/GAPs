@@ -156,6 +156,7 @@ def detect_expected_frequencies_cqt(
         tolerance_cents=tolerance_cents,
         harmonic_rejection_margin_db=harmonic_rejection_margin_db,
         harmonic_excess_db=harmonic_excess_db,
+        fine_spectrum=_FineSpectrum(audio, sample_rate),
     )
     matches = _reject_unbalanced_matches(matches, balance_threshold_db=balance_threshold_db)
     is_correct = all(match.is_present for match in matches)
@@ -280,6 +281,7 @@ def _reject_unbalanced_matches(
 
 
 _HARMONIC_SLOPE_DB_PER_OCTAVE = 6.0
+_EVIDENCE_PARTIALS = 3
 _HARMONIC_COINCIDENCE_CENTS = 50.0
 
 
@@ -289,15 +291,22 @@ def _reject_probable_harmonic_matches(
     tolerance_cents: float,
     harmonic_rejection_margin_db: float,
     harmonic_excess_db: float,
+    fine_spectrum: _FineSpectrum | None = None,
     max_harmonic: int = 8,
 ) -> tuple[PolyphonicNoteMatch, ...]:
     """Reject notes whose energy is explained by a lower expected note's harmonic.
 
     When a note sits on harmonic h of a lower expected note, its fundamental
     alone proves nothing. The lower note's neighbouring harmonics (h-1, h+1)
-    predict how strong harmonic h would be on its own; the upper note only
-    counts when the measured energy clearly exceeds that prediction. If no
-    neighbouring harmonic is usable, fall back to the plain energy-gap rule.
+    predict how strong harmonic h would be on its own; the upper note counts
+    when the measured energy clearly exceeds that prediction (or, when no
+    prediction is possible, when it is not far weaker than the lower note).
+
+    A note rejected that way is still accepted when a fine-resolution spectrum
+    shows two separate peaks where one of its partials meets the lower note's
+    harmonic: equal-tempered notes rarely sit exactly on a harmonic (a major
+    third is ~14 cents off the 5th harmonic), so two sounding strings leave a
+    doublet while a lone harmonic leaves a single peak.
     """
     if harmonic_rejection_margin_db <= 0:
         return matches
@@ -331,6 +340,10 @@ def _reject_probable_harmonic_matches(
                 explained = (
                     lower_match.energy_db - match.energy_db > harmonic_rejection_margin_db
                 )
+            if explained and fine_spectrum is not None:
+                explained = not _has_partial_doublet(
+                    match, lower_match, harmonic, matches, fine_spectrum, max_harmonic
+                )
             if explained:
                 rejection_reason = f"probable_harmonic_of:{lower_match.name}"
                 break
@@ -343,6 +356,93 @@ def _reject_probable_harmonic_matches(
             guarded_matches.append(match)
 
     return tuple(guarded_matches)
+
+
+def _has_partial_doublet(
+    match: PolyphonicNoteMatch,
+    lower_match: PolyphonicNoteMatch,
+    harmonic: int,
+    matches: tuple[PolyphonicNoteMatch, ...],
+    fine_spectrum: _FineSpectrum,
+    max_harmonic: int,
+) -> bool:
+    for partial in range(1, _EVIDENCE_PARTIALS + 1):
+        note_frequency = match.expected_frequency * partial
+        harmonic_frequency = lower_match.expected_frequency * harmonic * partial
+        if any(
+            other is not match
+            and _coincides_with_other_note(note_frequency, lower_match, (other,), max_harmonic)
+            for other in matches
+        ):
+            continue
+        if fine_spectrum.has_doublet(note_frequency, harmonic_frequency):
+            return True
+    return False
+
+
+class _FineSpectrum:
+    """Zero-padded FFT of the whole buffer, computed only when it is needed."""
+
+    _PADDING = 4
+    _SEARCH_CENTS = 35.0
+    _MAX_LEVEL_GAP_DB = 15.0
+    _MIN_PROMINENCE_DB = 20.0
+    _FLOOR_SPAN = 1.2
+
+    def __init__(self, audio: np.ndarray, sample_rate: int) -> None:
+        self._audio = audio
+        self._sample_rate = sample_rate
+        self._magnitude_db: np.ndarray | None = None
+        self._bin_hz = 0.0
+        # Two tones closer than about two analysis bins merge into one peak.
+        self._resolution_hz = 2.0 * sample_rate / max(1, audio.size)
+
+    def has_doublet(self, frequency_a: float, frequency_b: float) -> bool:
+        """True when two distinct peaks sit where the two frequencies are expected."""
+        spacing_hz = abs(frequency_a - frequency_b)
+        if spacing_hz < self._resolution_hz:
+            return False
+        magnitude_db = self._spectrum_db()
+        search = 2.0 ** (self._SEARCH_CENTS / 1200.0)
+        low = int(min(frequency_a, frequency_b) / search / self._bin_hz)
+        high = int(math.ceil(max(frequency_a, frequency_b) * search / self._bin_hz)) + 1
+        low, high = max(1, low), min(magnitude_db.size - 1, high)
+        if high - low < 3:
+            return False
+
+        band = magnitude_db[low:high]
+        is_peak = (band >= magnitude_db[low - 1 : high - 1]) & (band > magnitude_db[low + 1 : high + 1])
+        peaks = np.flatnonzero(is_peak)
+        if peaks.size < 2:
+            return False
+        # Both peaks must stand clear of the surrounding noise, otherwise any
+        # random bump next to a lone harmonic would look like a second string.
+        centre = math.sqrt(frequency_a * frequency_b)
+        floor_low = max(1, int(centre / self._FLOOR_SPAN / self._bin_hz))
+        floor_high = min(magnitude_db.size, int(centre * self._FLOOR_SPAN / self._bin_hz) + 1)
+        minimum_db = float(np.median(magnitude_db[floor_low:floor_high])) + self._MIN_PROMINENCE_DB
+        peaks = peaks[band[peaks] >= minimum_db]
+        if peaks.size < 2:
+            return False
+        strongest = int(peaks[np.argmax(band[peaks])])
+        for peak in peaks:
+            distance_hz = abs(int(peak) - strongest) * self._bin_hz
+            if distance_hz < self._resolution_hz:
+                continue
+            if not 0.5 * spacing_hz <= distance_hz <= 2.0 * spacing_hz:
+                continue
+            if band[peak] >= band[strongest] - self._MAX_LEVEL_GAP_DB:
+                return True
+        return False
+
+    def _spectrum_db(self) -> np.ndarray:
+        if self._magnitude_db is None:
+            samples = self._audio.astype(np.float64, copy=False)
+            size = 1 << int(math.ceil(math.log2(max(2, samples.size * self._PADDING))))
+            spectrum = np.fft.rfft(samples * np.hanning(samples.size), n=size)
+            self._magnitude_db = 20.0 * np.log10(np.maximum(np.abs(spectrum), 1e-12))
+            self._bin_hz = self._sample_rate / size
+        return self._magnitude_db
 
 
 def _predict_harmonic_energy_db(

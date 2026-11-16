@@ -121,6 +121,25 @@ class PolyphonicDetectionTests(unittest.TestCase):
 
         self.assertTrue(result.is_correct)
 
+    def test_accepts_quiet_upper_note_on_fifth_harmonic_of_low_string(self) -> None:
+        # 2번줄 9프렛(G#4)은 6번줄 개방(E2)의 5배음 자리에 있다. 기본음은 E2 배음에
+        # 묻히지만 G#4의 2배음이 E2의 이웃 배음보다 뚜렷하게 크다.
+        expected = [ExpectedFrequency("2번줄 9프렛", 415.30), ExpectedFrequency("6번줄 0프렛", 82.41)]
+        time = np.arange(int(44100 * 1.2), dtype=np.float32) / 44100
+        samples = np.zeros_like(time)
+        for harmonic in range(1, 13):
+            samples += 0.25 / harmonic * np.sin(2.0 * np.pi * 82.41 * harmonic * time)
+        for harmonic, amplitude in ((1, 0.06), (2, 0.05)):
+            samples += amplitude * np.sin(2.0 * np.pi * 415.30 * harmonic * time)
+
+        both = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
+        low_only = detect_expected_frequencies_cqt(
+            synthesize_notes([82.41], harmonic_count=12), sample_rate=44100, expected_frequencies=expected
+        )
+
+        self.assertTrue(both.is_correct)
+        self.assertFalse(low_only.is_correct)
+
     def test_rejects_semitone_neighbour_leakage(self) -> None:
         expected = [ExpectedFrequency("G3", 196.0), ExpectedFrequency("G#3", 207.65)]
         samples = synthesize_notes([196.0])
