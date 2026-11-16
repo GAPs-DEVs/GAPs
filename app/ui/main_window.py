@@ -62,6 +62,7 @@ class MainWindow(QMainWindow):
         self.audio_controller.result_ready.connect(self._handle_audio_result)
         self.audio_controller.error_message.connect(self._handle_audio_error)
         self.retrigger_gate = RetriggerGate()
+        self._audio_previous_step = None
         self.current_index = 0
         self.practice_running = False
         self.selection_stage = "idle"
@@ -872,6 +873,7 @@ class MainWindow(QMainWindow):
         self.practice_panel.set_running(True)
         self._cancel_pending_interactive_advance()
         self.retrigger_gate.configure(None, self.current_step())
+        self._audio_previous_step = None
         self.refresh_practice_display()
 
         if self.current_mode() == "interactive":
@@ -915,6 +917,7 @@ class MainWindow(QMainWindow):
 
         self.current_index = max(0, min(index, len(self.practice_steps) - 1))
         self.retrigger_gate.configure(previous_step, self.current_step())
+        self._audio_previous_step = previous_step
         self.refresh_practice_display()
 
         if was_running and mode == "interactive":
@@ -951,7 +954,11 @@ class MainWindow(QMainWindow):
         step = self.current_step()
         microphone_device = self.current_microphone_device()
         self.practice_panel.reset_feedback("listening")
-        self.audio_controller.start_for_step(step, microphone_device)
+        self.audio_controller.start_for_step(
+            step,
+            microphone_device,
+            previous_step=self._audio_previous_step,
+        )
 
     def _stop_audio_worker(self) -> None:
         self.audio_controller.stop()

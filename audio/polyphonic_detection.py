@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from dataclasses import replace
 
@@ -26,6 +26,7 @@ class PolyphonicNoteMatch:
     energy_db: float
     is_present: bool
     rejection_reason: str = ""
+    recent_energy_db: float = -120.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,8 @@ def detect_expected_frequencies_cqt(
     floor_margin_db: float = 10.0,
     harmonic_rejection_margin_db: float = 18.0,
     bins_per_octave: int = 36,
+    balance_threshold_db: float = -20.0,
+    harmonic_excess_db: float = 5.0,
 ) -> PolyphonicDetectionResult:
     """Detect whether expected frequencies are present using librosa CQT energy.
 
@@ -130,23 +133,31 @@ def detect_expected_frequencies_cqt(
         bins_per_octave=bins_per_octave,
     )
 
+    spectrum = _Spectrum(
+        frequencies=cqt_frequencies,
+        energy_db=energy_db,
+        cents_per_bin=1200.0 / bins_per_octave,
+        tolerance_cents=tolerance_cents,
+    )
     matches = tuple(
         _match_expected_frequency(
             expected,
-            cqt_frequencies=cqt_frequencies,
-            energy_db=energy_db,
+            spectrum=spectrum,
             noise_floor_db=noise_floor_db,
-            tolerance_cents=tolerance_cents,
             relative_threshold_db=relative_threshold_db,
             floor_margin_db=floor_margin_db,
+            recent_energy_db=_recent_tone_energy_db(audio, sample_rate, expected.frequency),
         )
         for expected in expected_frequencies
     )
     matches = _reject_probable_harmonic_matches(
         matches,
+        spectrum=spectrum,
         tolerance_cents=tolerance_cents,
         harmonic_rejection_margin_db=harmonic_rejection_margin_db,
+        harmonic_excess_db=harmonic_excess_db,
     )
+    matches = _reject_unbalanced_matches(matches, balance_threshold_db=balance_threshold_db)
     is_correct = all(match.is_present for match in matches)
     return PolyphonicDetectionResult(
         matches=matches,
@@ -158,45 +169,136 @@ def detect_expected_frequencies_cqt(
     )
 
 
+@dataclass(frozen=True)
+class _Spectrum:
+    frequencies: np.ndarray
+    energy_db: np.ndarray
+    cents_per_bin: float
+    tolerance_cents: float
+
+    def strongest_bin_near(self, frequency: float) -> tuple[int, float]:
+        """Return (bin index, cents offset) of the strongest bin within tolerance."""
+        cents_offsets = 1200.0 * np.log2(self.frequencies / frequency)
+        candidates = np.flatnonzero(np.abs(cents_offsets) <= self.tolerance_cents)
+        if candidates.size == 0:
+            candidates = np.asarray([int(np.argmin(np.abs(cents_offsets)))])
+        index = int(candidates[np.argmax(self.energy_db[candidates])])
+        return index, float(cents_offsets[index])
+
+    def peak_near(self, frequency: float) -> tuple[float, float] | None:
+        """Return (energy dB, cents offset) of a real spectral peak near frequency.
+
+        The strongest bin inside the tolerance window only counts when it is a
+        local maximum whose interpolated centre also lies inside the window.
+        Otherwise the energy is the skirt of a neighbouring note, not a peak.
+        """
+        if frequency < self.frequencies[0] * 0.97 or frequency > self.frequencies[-1] * 1.03:
+            return None
+        index, cents = self.strongest_bin_near(frequency)
+        centre = float(self.energy_db[index])
+        left = float(self.energy_db[index - 1]) if index > 0 else -math.inf
+        right = (
+            float(self.energy_db[index + 1])
+            if index + 1 < self.energy_db.size
+            else -math.inf
+        )
+        if left > centre or right > centre:
+            return None
+        if math.isfinite(left) and math.isfinite(right):
+            curvature = left - 2.0 * centre + right
+            if curvature < 0.0:
+                cents += 0.5 * (left - right) / curvature * self.cents_per_bin
+        if abs(cents) > self.tolerance_cents:
+            return None
+        return centre, cents
+
+
 def _match_expected_frequency(
     expected: ExpectedFrequency,
-    cqt_frequencies: np.ndarray,
-    energy_db: np.ndarray,
+    spectrum: _Spectrum,
     noise_floor_db: float,
-    tolerance_cents: float,
     relative_threshold_db: float,
     floor_margin_db: float,
+    recent_energy_db: float,
 ) -> PolyphonicNoteMatch:
-    cents_offsets = 1200.0 * np.log2(cqt_frequencies / expected.frequency)
-    candidate_indices = np.flatnonzero(np.abs(cents_offsets) <= tolerance_cents)
-    if candidate_indices.size == 0:
-        nearest_index = int(np.argmin(np.abs(cents_offsets)))
-        candidate_indices = np.asarray([nearest_index])
-
-    best_local_index = int(candidate_indices[np.argmax(energy_db[candidate_indices])])
-    best_energy_db = float(energy_db[best_local_index])
-    detected_frequency = float(cqt_frequencies[best_local_index])
-    cents_difference = float(cents_offsets[best_local_index])
-    is_present = (
+    index, bin_cents = spectrum.strongest_bin_near(expected.frequency)
+    best_energy_db = float(spectrum.energy_db[index])
+    peak = spectrum.peak_near(expected.frequency)
+    cents_difference = peak[1] if peak is not None else bin_cents
+    loud_enough = (
         best_energy_db >= relative_threshold_db
         and best_energy_db >= noise_floor_db + floor_margin_db
     )
     return PolyphonicNoteMatch(
         name=expected.name,
         expected_frequency=expected.frequency,
-        detected_frequency=detected_frequency,
+        detected_frequency=float(expected.frequency * 2.0 ** (cents_difference / 1200.0)),
         cents_difference=cents_difference,
         energy_db=best_energy_db,
-        is_present=is_present,
+        is_present=loud_enough and peak is not None,
+        rejection_reason="no_spectral_peak" if loud_enough and peak is None else "",
+        recent_energy_db=recent_energy_db,
     )
+
+
+_RECENT_ENERGY_SAMPLES = 8192
+
+
+def _recent_tone_energy_db(audio: np.ndarray, sample_rate: int, frequency: float) -> float:
+    """Absolute level of `frequency` over the last ~190 ms of the buffer.
+
+    Unlike the CQT average this is local in time and does not depend on how
+    full the analysis buffer is, so consecutive windows can be compared to
+    tell a fresh strike from a note that is merely still ringing.
+    """
+    segment = audio[-_RECENT_ENERGY_SAMPLES:].astype(np.float64, copy=False)
+    window = np.hanning(segment.size)
+    phase = 2.0 * np.pi * frequency * np.arange(segment.size) / sample_rate
+    amplitude = 2.0 * abs(np.sum(segment * window * np.exp(-1j * phase))) / np.sum(window)
+    return 20.0 * math.log10(max(amplitude, 1e-6))
+
+
+def _reject_unbalanced_matches(
+    matches: tuple[PolyphonicNoteMatch, ...],
+    balance_threshold_db: float,
+) -> tuple[PolyphonicNoteMatch, ...]:
+    """Reject notes that are far weaker than the strongest expected note.
+
+    A note that was really struck together with the others is roughly as loud
+    as they are; resonance, leftover ringing and hum sit well below.
+    """
+    present = [match.energy_db for match in matches if match.is_present]
+    if not present:
+        return matches
+    minimum_db = max(present) + balance_threshold_db
+    return tuple(
+        replace(match, is_present=False, rejection_reason="too_weak_for_chord")
+        if match.is_present and match.energy_db < minimum_db
+        else match
+        for match in matches
+    )
+
+
+_HARMONIC_SLOPE_DB_PER_OCTAVE = 6.0
+_HARMONIC_COINCIDENCE_CENTS = 50.0
 
 
 def _reject_probable_harmonic_matches(
     matches: tuple[PolyphonicNoteMatch, ...],
+    spectrum: _Spectrum,
     tolerance_cents: float,
     harmonic_rejection_margin_db: float,
+    harmonic_excess_db: float,
     max_harmonic: int = 8,
 ) -> tuple[PolyphonicNoteMatch, ...]:
+    """Reject notes whose energy is explained by a lower expected note's harmonic.
+
+    When a note sits on harmonic h of a lower expected note, its fundamental
+    alone proves nothing. The lower note's neighbouring harmonics (h-1, h+1)
+    predict how strong harmonic h would be on its own; the upper note only
+    counts when the measured energy clearly exceeds that prediction. If no
+    neighbouring harmonic is usable, fall back to the plain energy-gap rule.
+    """
     if harmonic_rejection_margin_db <= 0:
         return matches
 
@@ -214,16 +316,22 @@ def _reject_probable_harmonic_matches(
                 continue
 
             ratio = match.expected_frequency / lower_match.expected_frequency
-            nearest_harmonic = int(round(ratio))
-            if nearest_harmonic < 2 or nearest_harmonic > max_harmonic:
+            harmonic = int(round(ratio))
+            if harmonic < 2 or harmonic > max_harmonic:
+                continue
+            if abs(1200.0 * math.log2(ratio / harmonic)) > tolerance_cents:
                 continue
 
-            harmonic_cents = 1200.0 * math.log2(ratio / nearest_harmonic)
-            if abs(harmonic_cents) > tolerance_cents:
-                continue
-
-            energy_gap_db = lower_match.energy_db - match.energy_db
-            if energy_gap_db > harmonic_rejection_margin_db:
+            predicted_db = _predict_harmonic_energy_db(
+                lower_match, harmonic, matches, spectrum, max_harmonic
+            )
+            if predicted_db is not None:
+                explained = match.energy_db < predicted_db + harmonic_excess_db
+            else:
+                explained = (
+                    lower_match.energy_db - match.energy_db > harmonic_rejection_margin_db
+                )
+            if explained:
                 rejection_reason = f"probable_harmonic_of:{lower_match.name}"
                 break
 
@@ -235,3 +343,102 @@ def _reject_probable_harmonic_matches(
             guarded_matches.append(match)
 
     return tuple(guarded_matches)
+
+
+def _predict_harmonic_energy_db(
+    lower_match: PolyphonicNoteMatch,
+    harmonic: int,
+    matches: tuple[PolyphonicNoteMatch, ...],
+    spectrum: _Spectrum,
+    max_harmonic: int,
+) -> float | None:
+    """Estimate harmonic `harmonic` of lower_match from its clean neighbours."""
+    neighbours: list[tuple[int, float]] = []
+    for index in (harmonic - 1, harmonic + 1):
+        frequency = lower_match.expected_frequency * index
+        if _coincides_with_other_note(frequency, lower_match, matches, max_harmonic):
+            continue
+        peak = spectrum.peak_near(frequency)
+        if peak is not None:
+            neighbours.append((index, peak[0]))
+
+    if not neighbours:
+        return None
+    if len(neighbours) == 2:
+        (low_index, low_db), (high_index, high_db) = neighbours
+        position = math.log2(harmonic / low_index) / math.log2(high_index / low_index)
+        return low_db + (high_db - low_db) * position
+    index, energy_db = neighbours[0]
+    return energy_db - _HARMONIC_SLOPE_DB_PER_OCTAVE * math.log2(harmonic / index)
+
+
+def _coincides_with_other_note(
+    frequency: float,
+    lower_match: PolyphonicNoteMatch,
+    matches: tuple[PolyphonicNoteMatch, ...],
+    max_harmonic: int,
+) -> bool:
+    for other in matches:
+        if other is lower_match:
+            continue
+        for index in range(1, max_harmonic + 1):
+            cents = 1200.0 * math.log2(frequency / (other.expected_frequency * index))
+            if abs(cents) <= _HARMONIC_COINCIDENCE_CENTS:
+                return True
+    return False
+
+
+class ChordJudgeGate:
+    """Frame-to-frame gate applied on top of single-window detections.
+
+    - Notes carried over from the previous step must be struck again: their
+      energy has to rise above the level they were ringing at (or the input
+      has to go silent first) before they count.
+    - A chord only passes after `confirm_frames` consecutive correct windows.
+    """
+
+    def __init__(
+        self,
+        restrike_names: Iterable[str] = (),
+        onset_rise_db: float = 3.0,
+        confirm_frames: int = 2,
+    ) -> None:
+        if confirm_frames < 1:
+            raise ValueError("confirm_frames must be greater than or equal to 1.")
+        self.onset_rise_db = onset_rise_db
+        self.confirm_frames = confirm_frames
+        self._baseline_db: dict[str, float] = {name: math.inf for name in restrike_names}
+        self._struck: set[str] = set()
+        self._correct_streak = 0
+
+    def update(self, detection: PolyphonicDetectionResult) -> PolyphonicDetectionResult:
+        if detection.status == "no_signal":
+            self._struck.update(self._baseline_db)
+            self._correct_streak = 0
+            return detection
+
+        matches = tuple(self._gate_match(match) for match in detection.matches)
+        is_correct = all(match.is_present for match in matches)
+        self._correct_streak = self._correct_streak + 1 if is_correct else 0
+        if is_correct and self._correct_streak < self.confirm_frames:
+            return replace(detection, matches=matches, is_correct=False, status="confirming")
+        return replace(
+            detection,
+            matches=matches,
+            is_correct=is_correct,
+            status="correct" if is_correct else "incorrect",
+        )
+
+    def _gate_match(self, match: PolyphonicNoteMatch) -> PolyphonicNoteMatch:
+        name = match.name
+        if name not in self._baseline_db or name in self._struck:
+            return match
+
+        baseline_db = self._baseline_db[name]
+        if match.recent_energy_db >= baseline_db + self.onset_rise_db:
+            self._struck.add(name)
+            return match
+        self._baseline_db[name] = min(baseline_db, match.recent_energy_db)
+        if not match.is_present:
+            return match
+        return replace(match, is_present=False, rejection_reason="awaiting_restrike")

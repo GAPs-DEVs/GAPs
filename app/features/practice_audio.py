@@ -4,7 +4,11 @@ from PySide6.QtCore import QObject, Signal
 
 from audio.audio_worker import AudioWorker
 from audio.chord_audio_worker import ChordAudioWorker
-from practice.score_steps import PracticeStep, practice_steps_have_same_expected_frequencies
+from practice.score_steps import (
+    PracticeStep,
+    practice_step_carried_over_names,
+    practice_steps_have_same_expected_frequencies,
+)
 
 
 PracticeAudioWorker = AudioWorker | ChordAudioWorker
@@ -18,7 +22,12 @@ class PracticeAudioController(QObject):
         super().__init__(parent)
         self.worker: PracticeAudioWorker | None = None
 
-    def start_for_step(self, step: PracticeStep, device: int | str | None = None) -> None:
+    def start_for_step(
+        self,
+        step: PracticeStep,
+        device: int | str | None = None,
+        previous_step: PracticeStep | None = None,
+    ) -> None:
         self.stop()
         if step.mode == "single":
             expected = step.expected_frequencies[0]
@@ -31,6 +40,7 @@ class PracticeAudioController(QObject):
             self.worker = ChordAudioWorker(
                 expected_frequencies=list(step.expected_frequencies),
                 device=device,
+                restrike_names=practice_step_carried_over_names(previous_step, step),
                 parent=self,
             )
 
