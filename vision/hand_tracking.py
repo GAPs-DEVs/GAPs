@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Condition, Thread
+from time import perf_counter
 from typing import Sequence
 
 import numpy as np
@@ -157,10 +159,18 @@ class HandOcclusionMasker:
         self.available = False
         self.previous_mask: np.ndarray | None = None
 
-    def process(self, frame: np.ndarray) -> np.ndarray | None:
+    @staticmethod
+    def shrink(frame: np.ndarray) -> np.ndarray:
+        """The inference-sized image; the result never aliases a camera buffer."""
         height, width = frame.shape[:2]
         scale = min(1.0, 640 / max(height, width))
-        small = cv2.resize(frame, (round(width * scale), round(height * scale))) if scale < 1 else frame
+        return cv2.resize(frame, (round(width * scale), round(height * scale))) if scale < 1 else frame.copy()
+
+    def process(self, frame: np.ndarray) -> np.ndarray | None:
+        return self.mask(self.shrink(frame), frame.shape[:2])
+
+    def mask(self, small: np.ndarray, frame_size: tuple[int, int]) -> np.ndarray | None:
+        height, width = frame_size
         result = self.tracker.process(small)
         self.available = result.backend_available
         if not self.available:
@@ -176,6 +186,80 @@ class HandOcclusionMasker:
 
     def close(self) -> None:
         self.tracker.close()
+
+
+class AsyncHandOcclusionMasker:
+    """Hand masks from a worker thread, so tracking never waits for inference.
+
+    ``process`` queues the current frame and returns the newest finished mask,
+    normally the previous frame's. Each mask already includes the frame before
+    it, so the returned region covers the hand over the two preceding frames.
+    A hand that enters faster than the mask padding is hidden one frame late;
+    the tracker's own appearance check against the reference image still
+    rejects such pixels. Only the very first call waits, so the caller learns
+    at once whether hand detection works at all.
+
+    One replaceable pending image: a slow detector skips frames, never queues.
+    All inference, including model loading, stays on the worker thread.
+    """
+
+    def __init__(self, masker: HandOcclusionMasker | None = None) -> None:
+        self._masker = masker or HandOcclusionMasker()
+        self._condition = Condition()
+        self._thread: Thread | None = None
+        self._pending: tuple[np.ndarray, tuple[int, int]] | None = None
+        self._mask: np.ndarray | None = None
+        self._completed = 0
+        self._closed = False
+        self.available = False
+        self.last_inference_ms = 0.
+
+    def process(self, frame: np.ndarray) -> np.ndarray | None:
+        frame_size = frame.shape[:2]
+        small = self._masker.shrink(frame)
+        with self._condition:
+            if self._closed:
+                return None
+            self._pending = (small, frame_size)
+            if self._thread is None:
+                self._thread = Thread(target=self._run, name="hand-occlusion-mask", daemon=True)
+                self._thread.start()
+            self._condition.notify_all()
+            if self._completed == 0:
+                self._condition.wait_for(lambda: self._completed > 0 or self._closed, timeout=10.)
+            mask = self._mask
+        # Never hand back a mask made for a different camera resolution.
+        return mask if mask is not None and mask.shape == frame_size else None
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._pending = None
+            self._condition.notify_all()
+            thread = self._thread
+        if thread is not None:
+            thread.join()
+        self._masker.close()
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: self._closed or self._pending is not None)
+                if self._closed:
+                    return
+                (small, frame_size), self._pending = self._pending, None
+            started = perf_counter()
+            try:
+                mask = self._masker.mask(small, frame_size)
+                available = self._masker.available
+            except Exception:  # Tracking continues without a hand mask.
+                mask, available = None, False
+            with self._condition:
+                self._mask = mask
+                self.available = available
+                self.last_inference_ms = (perf_counter() - started) * 1000
+                self._completed += 1
+                self._condition.notify_all()
 
 
 def extract_fingertips(

@@ -39,10 +39,14 @@ from vision.fretboard_mapping import (
 )
 from vision.fretboard_motion import HybridSelectedLineTracker, HybridTrackingFrame, filter_visible_markers
 from vision.fretboard_recovery import BackgroundFretboardRecovery
-from vision.hand_tracking import Fingertip, HandTrackingResult, MediaPipeHandTracker, HandOcclusionMasker
+from vision.hand_tracking import AsyncHandOcclusionMasker, Fingertip, HandTrackingResult, MediaPipeHandTracker
 
 
 HAND_TRACKING_ENABLED = False
+# Importing ultralytics turns OpenCV's worker pool off for the whole process.
+# The background SIFT search then runs on one core and reacquisition is slow.
+# Measured: 4 threads cut reacquisition by about a third for ~1 ms per frame.
+OPENCV_THREADS = 4
 
 
 @dataclass
@@ -86,6 +90,7 @@ class PracticeFrameStats:
     capture_sequence: int = 0
     capture_fps: float = 0.
     ar_expected: bool = False
+    tracking_detail: str = ""
 
 
 class PracticeVideoWorker(QThread):
@@ -121,7 +126,7 @@ class PracticeVideoWorker(QThread):
         self.hybrid_tracker = HybridSelectedLineTracker(
             self.selected_line_tracker, recovery=BackgroundFretboardRecovery(),
         )
-        self.occlusion_masker = HandOcclusionMasker()
+        self.occlusion_masker = AsyncHandOcclusionMasker()
         self.latest_exclusion_mask = None
         self.manual_tracking_requested = False
         self.string_line_tracker = StringLineTracker()
@@ -136,6 +141,9 @@ class PracticeVideoWorker(QThread):
         self._running = True
         self._capture: LatestFrameCapture | None = None
         self._clear_tracking_requested = False
+        # Optional diagnostics sink (tools.session_recording); unused by the app.
+        self.session_recorder = None
+        self._latest_sequence = 0
 
     def stop(self) -> None:
         self._running = False
@@ -201,8 +209,7 @@ class PracticeVideoWorker(QThread):
         self.selected_line_tracker.clear()
         self.selected_line_tracker.reference_fret_index = reference_index
         self.selected_line_tracker.accept_registered_grid(grid)
-        if self.latest_frame_bgr is not None:
-            self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
+        self._seed_tracker()
         self.note_marker_tracker.clear()
         self.string_line_tracker.clear()
         self.selection_active = False
@@ -222,8 +229,20 @@ class PracticeVideoWorker(QThread):
         self.manual_tracking_requested = False
         self._clear_tracking_requested = True
 
+    def _seed_tracker(self) -> None:
+        if self.latest_frame_bgr is None:
+            return
+        self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
+        if self.session_recorder is not None:
+            self.session_recorder.seeded(
+                self._latest_sequence, self.latest_frame_bgr, self.latest_exclusion_mask,
+                self.hybrid_tracker.anchor_grid, self.selected_line_tracker.reference_fret_index,
+            )
+
     def _clear_manual_tracking(self) -> None:
         self.manual_tracking_requested = False
+        if self.session_recorder is not None:
+            self.session_recorder.cleared(self._latest_sequence)
         self.selected_line_tracker.clear()
         self.hybrid_tracker.clear()
         self.string_line_tracker.clear()
@@ -236,6 +255,7 @@ class PracticeVideoWorker(QThread):
         except Exception as exc:  # pragma: no cover - GUI error path
             self.error_message.emit(str(exc))
             return
+        cv2.setNumThreads(OPENCV_THREADS)
 
         capture = LatestFrameCapture(self.camera_index)
         self._capture = capture
@@ -266,8 +286,7 @@ class PracticeVideoWorker(QThread):
                 self.pending_reference_fret_index = None
                 if self.selected_line_tracker.is_active:
                     self.selected_line_tracker.set_reference_fret_index(reference_index)
-                    if self.latest_frame_bgr is not None:
-                        self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
+                    self._seed_tracker()
                     self.string_line_tracker.clear()
                     self.note_marker_tracker.clear()
             if self.pending_manual_selection is not None:
@@ -277,8 +296,7 @@ class PracticeVideoWorker(QThread):
                     reference_fret_line,
                     reference_fret_index,
                 )
-                if self.latest_frame_bgr is not None:
-                    self.hybrid_tracker.seed(self.latest_frame_bgr, self.latest_exclusion_mask)
+                self._seed_tracker()
                 self.pending_manual_selection = None
                 self.selection_active = False
                 self.frozen_selection_lines = ()
@@ -298,6 +316,10 @@ class PracticeVideoWorker(QThread):
             frame_bgr = cv2.flip(frame_bgr, 1)
 
             self.latest_frame_bgr = frame_bgr.copy()
+            self._latest_sequence = captured.sequence
+            recorder = self.session_recorder
+            if recorder is not None:
+                recorder.frame(self.latest_frame_bgr, captured.sequence, frame_timestamp)
             inference_start = perf_counter()
             self.latest_exclusion_mask = self.occlusion_masker.process(frame_bgr)
             hand_mask_ms = (perf_counter() - inference_start) * 1000
@@ -368,7 +390,11 @@ class PracticeVideoWorker(QThread):
                 ar_expected=(self.hybrid_tracker.anchor_grid is not None and self.current_step is not None
                              and any(note.fret_number <= (self.selected_line_tracker.reference_fret_index or 0)
                                      for note in self.current_step.notes)),
+                tracking_detail=(self.hybrid_tracker.last_decision
+                                 if analysis.tracking_mode.startswith("selected_lines_") else ""),
             )
+            if recorder is not None:
+                recorder.result(captured.sequence, stats.tracking_mode, stats.tracking_detail, stats.marker_count)
             image = bgr_to_qimage(annotated)
             stats.emitted_at = monotonic()
             self.frame_ready.emit(image, stats)

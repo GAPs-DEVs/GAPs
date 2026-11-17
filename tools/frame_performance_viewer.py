@@ -24,6 +24,7 @@ from app.config import DEFAULT_SCORE_PATH, PROJECT_ROOT
 from app.ui.main_window import MainWindow
 from tools.frame_performance import FramePerformanceMonitor, MODE_LABELS, mode_group
 from tools.performance_metadata import report_identity
+from tools.session_recording import SessionRecorder
 from tools.fretboard_detection_viewer import resolve_camera_calibration_path, resolve_model_path
 from vision.camera_calibration import load_camera_calibration
 
@@ -67,9 +68,12 @@ class FrameIntervalGraph(QWidget):
 
 
 class FramePerformanceWindow(MainWindow):
-    def __init__(self, *, output_dir: Path = PROJECT_ROOT / 'artifacts' / 'performance', label: str = '', **kwargs):
+    def __init__(self, *, output_dir: Path = PROJECT_ROOT / 'artifacts' / 'performance', label: str = '',
+                 record: bool = False, **kwargs):
         super().__init__(**kwargs)
         self.run_label = label
+        self.record = record
+        self.recorder: SessionRecorder | None = None
         self.setWindowTitle('Guitar Practice · 실시간 프레임 테스트' + (f' · {label}' if label else ''))
         # Enter the actual practice screen directly, retaining its camera,
         # calibration and marker implementation. No second detector pipeline.
@@ -155,6 +159,18 @@ class FramePerformanceWindow(MainWindow):
         self._accept_after = monotonic()
         super().start_video()
         self._camera_live = self.video_worker is not None
+        if self.record and self.video_worker is not None and hasattr(self.video_worker, 'session_recorder'):
+            self._finish_recording()
+            stamp = datetime.now(ZoneInfo('Asia/Seoul')).strftime('recording-%Y%m%d-%H%M%S')
+            self.recorder = SessionRecorder(self.output_dir / stamp)
+            self.video_worker.session_recorder = self.recorder
+            self.save_status.setText(f'녹화 중: {self.recorder.directory} · 카메라를 끄면 저장됩니다.')
+
+    def _finish_recording(self):
+        recorder, self.recorder = self.recorder, None
+        if recorder is not None:
+            directory = recorder.close()
+            self.save_status.setText(f'녹화 저장됨: {directory} (누락 {recorder.dropped_frames}장)')
 
     def stop_video(self):
         self._camera_live = False
@@ -164,6 +180,8 @@ class FramePerformanceWindow(MainWindow):
     def on_video_worker_finished(self):
         self._camera_live = False
         self.monitor.break_stream()
+        # The worker has stopped, so no frame can still be handed to the recorder.
+        self._finish_recording()
         super().on_video_worker_finished()
 
     def update_frame(self, image, stats):
@@ -267,6 +285,7 @@ class FramePerformanceWindow(MainWindow):
     def closeEvent(self, event):
         self.refresh_timer.stop()
         super().closeEvent(event)
+        self._finish_recording()
 
 
 def parse_args(argv=None):
@@ -277,6 +296,8 @@ def parse_args(argv=None):
     parser.add_argument('--camera-calibration', default=None)
     parser.add_argument('--output-dir', type=Path, default=PROJECT_ROOT / 'artifacts' / 'performance')
     parser.add_argument('--label', default='', help='Label saved with the commit and measurement results')
+    parser.add_argument('--record', action='store_true',
+                        help='Also save the tracked camera frames (roughly 5 MB per second) for tools.replay_session')
     return parser.parse_args(argv)
 
 
@@ -288,7 +309,7 @@ def main():
     application = QApplication(sys.argv)
     window = FramePerformanceWindow(
         model_path=model_path, camera_index=args.camera, score_path=args.score_json,
-        camera_calibration=calibration, output_dir=args.output_dir, label=args.label,
+        camera_calibration=calibration, output_dir=args.output_dir, label=args.label, record=args.record,
     )
     window.show()
     # Dock layouts settle on first show; fit the combined view afterwards.

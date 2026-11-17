@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         self.audio_controller.result_ready.connect(self._handle_audio_result)
         self.audio_controller.error_message.connect(self._handle_audio_error)
         self.retrigger_gate = RetriggerGate()
+        self._audio_previous_step = None
         self.current_index = 0
         self.practice_running = False
         self.selection_stage = "idle"
@@ -643,7 +644,8 @@ class MainWindow(QMainWindow):
             elif stats.tracking_mode in {"selected_lines_tracking", "selected_lines_reacquired"}:
                 self.video_status_label.setText("지판 맞춤 완료")
                 self.tracking_panel.hint_label.setText("지판 맞춤 완료 · 연습을 시작하세요.")
-            elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity"}:
+            elif stats.tracking_mode in {"selected_lines_motion", "selected_lines_continuity",
+                                         "selected_lines_predicted"}:
                 self.video_status_label.setText("지판 움직임 추적 중")
             elif stats.tracking_mode == "selected_lines_hold":
                 self.video_status_label.setText("지판을 다시 찾는 중")
@@ -897,6 +899,7 @@ class MainWindow(QMainWindow):
         self.practice_panel.set_running(True)
         self._cancel_pending_interactive_advance()
         self.retrigger_gate.configure(None, self.current_step())
+        self._audio_previous_step = None
         self.refresh_practice_display()
 
         if self.current_mode() == "interactive":
@@ -995,6 +998,7 @@ class MainWindow(QMainWindow):
 
         self.current_index = max(0, min(index, len(self.practice_steps) - 1))
         self.retrigger_gate.configure(previous_step, self.current_step())
+        self._audio_previous_step = previous_step
         self.refresh_practice_display()
 
         if was_running and mode == "interactive":
@@ -1031,7 +1035,11 @@ class MainWindow(QMainWindow):
         step = self.current_step()
         microphone_device = self.current_microphone_device()
         self.practice_panel.reset_feedback("listening")
-        self.audio_controller.start_for_step(step, microphone_device)
+        self.audio_controller.start_for_step(
+            step,
+            microphone_device,
+            previous_step=self._audio_previous_step,
+        )
 
     def _stop_audio_worker(self) -> None:
         self.audio_controller.stop()

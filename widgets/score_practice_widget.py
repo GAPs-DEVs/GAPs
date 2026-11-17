@@ -27,6 +27,7 @@ from practice.score_steps import (
     PracticeStep,
     build_practice_steps,
     load_parsed_notes_from_json,
+    practice_step_carried_over_names,
     practice_steps_have_same_expected_frequencies,
 )
 
@@ -89,6 +90,7 @@ class ScorePracticeWidget(QWidget):
         self.is_running = False
         self._advanced_step_keys: set[int] = set()
         self._release_required_for_current_step = False
+        self._previous_step_for_worker: PracticeStep | None = None
         self._release_observed_for_current_step = True
         self._pending_auto_advance_index: int | None = None
 
@@ -289,6 +291,9 @@ class ScorePracticeWidget(QWidget):
                 sample_rate=self.sample_rate,
                 tolerance_cents=self.chord_tolerance_cents,
                 device=self.device,
+                restrike_names=practice_step_carried_over_names(
+                    self._previous_step_for_worker, step
+                ),
                 parent=self,
             )
 
@@ -362,6 +367,7 @@ class ScorePracticeWidget(QWidget):
             and practice_steps_have_same_expected_frequencies(previous_step, current_step)
         )
         self._release_observed_for_current_step = not self._release_required_for_current_step
+        self._previous_step_for_worker = previous_step
 
     def _apply_retrigger_gate(self, result: dict) -> dict:
         if not self._release_required_for_current_step:

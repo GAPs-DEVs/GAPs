@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from queue import Empty, Full, Queue
 from time import perf_counter
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
-from audio.polyphonic_detection import ExpectedFrequency, detect_expected_frequencies_cqt
+from audio.polyphonic_detection import (
+    ChordJudgeGate,
+    ExpectedFrequency,
+    detect_expected_frequencies_cqt,
+)
+
+
+RESTRIKE_MESSAGE = "이전 스텝에서 울리던 음은 다시 쳐야 인정됩니다."
 
 
 class ChordAudioWorker(QThread):
@@ -24,6 +32,9 @@ class ChordAudioWorker(QThread):
         update_interval_ms: int = 120,
         result_hold_ms: int = 600,
         device: int | str | None = None,
+        restrike_names: Iterable[str] = (),
+        onset_rise_db: float = 3.0,
+        confirm_frames: int = 2,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -43,6 +54,11 @@ class ChordAudioWorker(QThread):
         self.update_interval_ms = update_interval_ms
         self.result_hold_ms = result_hold_ms
         self.device = device
+        self._judge_gate = ChordJudgeGate(
+            restrike_names=restrike_names,
+            onset_rise_db=onset_rise_db,
+            confirm_frames=confirm_frames,
+        )
         self._running = False
 
     def stop(self, timeout_ms: int = 2000) -> None:
@@ -115,6 +131,7 @@ class ChordAudioWorker(QThread):
                         tolerance_cents=self.tolerance_cents,
                         silence_threshold=self.silence_threshold,
                     )
+                    detection = self._judge_gate.update(detection)
                     result = self._build_result(detection, stream_status_message)
                     if detection.is_correct:
                         last_correct_result = result
@@ -178,8 +195,13 @@ class ChordAudioWorker(QThread):
             }
             for match in detection.matches
         ]
+        awaiting_restrike = any(
+            match["rejection_reason"] == "awaiting_restrike" for match in matches
+        )
         return {
-            "status": detection.status,
+            # "confirming" is internal: the chord looked right but still needs
+            # another consecutive window before it is accepted.
+            "status": "listening" if detection.status == "confirming" else detection.status,
             "is_correct": detection.is_correct,
             "matches": matches,
             "matched_notes": [match["name"] for match in matches if match["is_present"]],
@@ -190,7 +212,7 @@ class ChordAudioWorker(QThread):
             "rms": detection.rms,
             "peak": detection.peak,
             "noise_floor_db": detection.noise_floor_db,
-            "message": "",
+            "message": RESTRIKE_MESSAGE if awaiting_restrike else "",
             "stream_status": stream_status_message,
             "held": False,
             "held_ms": 0,

@@ -5,7 +5,13 @@ import unittest
 import numpy as np
 
 from audio.music_math import SOLFEGE_TEST_NOTE_FREQUENCIES
-from audio.polyphonic_detection import ExpectedFrequency, detect_expected_frequencies_cqt
+from audio.polyphonic_detection import (
+    ChordJudgeGate,
+    ExpectedFrequency,
+    PolyphonicDetectionResult,
+    PolyphonicNoteMatch,
+    detect_expected_frequencies_cqt,
+)
 
 
 def synthesize_notes(
@@ -95,6 +101,143 @@ class PolyphonicDetectionTests(unittest.TestCase):
         result = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
 
         self.assertEqual(result.status, "correct")
+        self.assertTrue(result.is_correct)
+
+    def test_rejects_octave_note_explained_by_lower_note_harmonic(self) -> None:
+        expected = [ExpectedFrequency("E2", 82.41), ExpectedFrequency("E3", 164.81)]
+        samples = synthesize_notes([82.41], harmonic_count=6)
+
+        result = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
+        matches = {match.name: match for match in result.matches}
+
+        self.assertFalse(result.is_correct)
+        self.assertEqual(matches["E3"].rejection_reason, "probable_harmonic_of:E2")
+
+    def test_accepts_octave_pair_when_both_notes_are_played(self) -> None:
+        expected = [ExpectedFrequency("E2", 82.41), ExpectedFrequency("E3", 164.81)]
+        samples = synthesize_notes([82.41, 164.81], harmonic_count=6)
+
+        result = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
+
+        self.assertTrue(result.is_correct)
+
+    def test_accepts_quiet_upper_note_on_fifth_harmonic_of_low_string(self) -> None:
+        # 2번줄 9프렛(G#4)은 6번줄 개방(E2)의 5배음 자리에 있다. 기본음은 E2 배음에
+        # 묻히지만 G#4의 2배음이 E2의 이웃 배음보다 뚜렷하게 크다.
+        expected = [ExpectedFrequency("2번줄 9프렛", 415.30), ExpectedFrequency("6번줄 0프렛", 82.41)]
+        time = np.arange(int(44100 * 1.2), dtype=np.float32) / 44100
+        samples = np.zeros_like(time)
+        for harmonic in range(1, 13):
+            samples += 0.25 / harmonic * np.sin(2.0 * np.pi * 82.41 * harmonic * time)
+        for harmonic, amplitude in ((1, 0.06), (2, 0.05)):
+            samples += amplitude * np.sin(2.0 * np.pi * 415.30 * harmonic * time)
+
+        both = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
+        low_only = detect_expected_frequencies_cqt(
+            synthesize_notes([82.41], harmonic_count=12), sample_rate=44100, expected_frequencies=expected
+        )
+
+        self.assertTrue(both.is_correct)
+        self.assertFalse(low_only.is_correct)
+
+    def test_rejects_semitone_neighbour_leakage(self) -> None:
+        expected = [ExpectedFrequency("G3", 196.0), ExpectedFrequency("G#3", 207.65)]
+        samples = synthesize_notes([196.0])
+
+        result = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
+        matches = {match.name: match for match in result.matches}
+
+        self.assertFalse(result.is_correct)
+        self.assertFalse(matches["G#3"].is_present)
+
+    def test_accepts_semitone_pair_when_both_notes_are_played(self) -> None:
+        expected = [ExpectedFrequency("G3", 196.0), ExpectedFrequency("G#3", 207.65)]
+        samples = synthesize_notes([196.0, 207.65])
+
+        result = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
+
+        self.assertTrue(result.is_correct)
+
+    def test_rejects_note_far_weaker_than_the_rest_of_the_chord(self) -> None:
+        expected = [ExpectedFrequency("G3", 196.0), ExpectedFrequency("B3", 246.94)]
+        time = np.arange(int(44100 * 1.2), dtype=np.float32) / 44100
+        samples = 0.25 * np.sin(2.0 * np.pi * 246.94 * time)
+        samples += 0.25 * 10 ** (-26 / 20) * np.sin(2.0 * np.pi * 196.0 * time)
+
+        result = detect_expected_frequencies_cqt(
+            samples.astype(np.float32), sample_rate=44100, expected_frequencies=expected
+        )
+        matches = {match.name: match for match in result.matches}
+
+        self.assertFalse(result.is_correct)
+        self.assertEqual(matches["G3"].rejection_reason, "too_weak_for_chord")
+
+
+def make_detection(recent_energies_db: dict[str, float], status: str = "correct") -> PolyphonicDetectionResult:
+    matches = tuple(
+        PolyphonicNoteMatch(
+            name=name,
+            expected_frequency=100.0,
+            detected_frequency=100.0,
+            cents_difference=0.0,
+            energy_db=0.0,
+            is_present=status != "no_signal",
+            recent_energy_db=energy,
+        )
+        for name, energy in recent_energies_db.items()
+    )
+    return PolyphonicDetectionResult(
+        matches=matches,
+        rms=0.1,
+        peak=0.2,
+        noise_floor_db=-40.0,
+        is_correct=status == "correct",
+        status=status,
+    )
+
+
+class ChordJudgeGateTests(unittest.TestCase):
+    def test_requires_consecutive_correct_windows(self) -> None:
+        gate = ChordJudgeGate(confirm_frames=2)
+
+        first = gate.update(make_detection({"A": -20.0, "B": -20.0}))
+        second = gate.update(make_detection({"A": -20.0, "B": -20.0}))
+
+        self.assertFalse(first.is_correct)
+        self.assertEqual(first.status, "confirming")
+        self.assertTrue(second.is_correct)
+        self.assertEqual(second.status, "correct")
+
+    def test_carried_over_note_must_be_struck_again(self) -> None:
+        gate = ChordJudgeGate(restrike_names=["A"], confirm_frames=1)
+
+        ringing = gate.update(make_detection({"A": -30.0, "B": -20.0}))
+        decaying = gate.update(make_detection({"A": -31.0, "B": -20.0}))
+        struck = gate.update(make_detection({"A": -22.0, "B": -20.0}))
+        sustained = gate.update(make_detection({"A": -27.0, "B": -21.0}))
+
+        for result in (ringing, decaying):
+            matches = {match.name: match for match in result.matches}
+            self.assertFalse(result.is_correct)
+            self.assertEqual(matches["A"].rejection_reason, "awaiting_restrike")
+            self.assertTrue(matches["B"].is_present)
+        self.assertTrue(struck.is_correct)
+        self.assertTrue(sustained.is_correct)
+
+    def test_silence_releases_carried_over_note(self) -> None:
+        gate = ChordJudgeGate(restrike_names=["A"], confirm_frames=1)
+
+        gate.update(make_detection({"A": -30.0, "B": -20.0}))
+        gate.update(make_detection({"A": -120.0, "B": -120.0}, status="no_signal"))
+        replayed = gate.update(make_detection({"A": -30.0, "B": -20.0}))
+
+        self.assertTrue(replayed.is_correct)
+
+    def test_notes_not_carried_over_pass_without_onset(self) -> None:
+        gate = ChordJudgeGate(restrike_names=[], confirm_frames=1)
+
+        result = gate.update(make_detection({"A": -30.0, "B": -20.0}))
+
         self.assertTrue(result.is_correct)
 
 

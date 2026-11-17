@@ -54,8 +54,11 @@ uv run python widgets/chord_judge_widget.py
 - 마이크 입력은 `block_size=2048` 단위로 계속 받음
 - 최근 `analysis_window_ms=650`, 즉 약 0.65초 구간을 모아서 분석
 - `librosa.cqt`로 주파수 대역별 에너지를 계산
-- 기대 주파수 주변 에너지가 충분하면 해당 음을 감지한 것으로 판단
-- 낮은 줄의 배음이 높은 목표음처럼 잡히는 경우를 줄이기 위해 harmonic rejection을 적용
+- 기대 주파수 ±tolerance 안에 실제 스펙트럼 피크가 있고 에너지가 충분하면 해당 음을 감지한 것으로 판단
+- 가장 강한 기대음보다 20dB 넘게 약한 음은 제외 (`too_weak_for_chord`)
+- 낮은 기대음의 배음 자리에 있는 음은, 이웃 배음으로 예측한 세기보다 5dB 이상 강할 때만 인정 (`probable_harmonic_of:*`)
+- 이전 step에서도 기대음이었던 음은 다시 쳐서 에너지가 올라가야 인정 (`awaiting_restrike`)
+- 2개 분석 구간 연속으로 정답일 때만 `correct`
 
 ### 악보 JSON 기반 step 연습 위젯
 
@@ -306,6 +309,8 @@ worker.deleteLater()
             "cents_difference": float | None,
             "energy_db": float,
             "is_present": bool,
+            # "" | "no_spectral_peak" | "too_weak_for_chord"
+            # | "probable_harmonic_of:<name>" | "awaiting_restrike"
             "rejection_reason": str,
         }
     ],
@@ -362,15 +367,9 @@ sounddevice InputStream
 → 2048 sample block 누적
 → 최근 650ms audio buffer 유지
 → librosa.cqt
-→ 기대 주파수 주변 energy_db 확인
-→ harmonic rejection
+→ 기대 주파수 주변 스펙트럼 피크 확인
+→ harmonic rejection → 음량 균형 확인
+→ ChordJudgeGate (재타현 확인, 2구간 연속 확인)
 → matched/missing note 계산
 ```
 
-## 현재 한계
-
-- 다중음 판정은 범용 코드 인식기가 아니라, "기대 음이 있는지" 확인하는 프로토타입이다.
-- 마이크 입력에는 기타 잔향, 배음, 주변 소음이 섞인다.
-- 같은 음 반복은 현재 `no_signal`을 한 번 요구해서 잔향으로 연속 통과하는 문제를 막는다.
-- 더 자연스럽게 반복음을 처리하려면 추후 attack/onset 감지가 필요하다.
-- pitch만으로는 같은 주파수를 내는 다른 줄/프렛을 구분할 수 없다. 줄 위치까지 판정하려면 카메라/손 위치/악보 정보와 결합해야 한다.

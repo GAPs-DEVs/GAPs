@@ -1216,5 +1216,30 @@ class FretboardMappingTests(unittest.TestCase):
         self.assertAlmostEqual(blank_result.grid.ordered_fret_lines[1].p0[1], 112.0)
 
 
+def test_transform_grid_matches_pointwise_projection():
+    from vision.fretboard_mapping import (
+        DetectedLine, build_grid_from_reference_lines, project_homography, transform_grid,
+    )
+
+    grid = build_grid_from_reference_lines(
+        DetectedLine("nut", (100, 60), (240, 60), 1.0),
+        DetectedLine("fret", (100, 460), (240, 460), 1.0), 9,
+    )
+    homography = np.asarray(((1.02, 0.03, 14.0), (-0.02, 0.97, 6.0), (1e-5, -2e-5, 1.0)))
+
+    moved = transform_grid(grid, homography)
+
+    assert len(moved.ordered_fret_lines) == len(grid.ordered_fret_lines)
+    for before, after in zip((grid.nut_line, *grid.ordered_fret_lines), (moved.nut_line, *moved.ordered_fret_lines)):
+        assert (after.kind, after.confidence, after.endpoints_observed) == (
+            before.kind, before.confidence, before.endpoints_observed)
+        np.testing.assert_allclose(after.p0, project_homography(homography, *before.p0), atol=1e-4)
+        np.testing.assert_allclose(after.p1, project_homography(homography, *before.p1), atol=1e-4)
+    for before_row, after_row in zip(grid.string_crossings, moved.string_crossings, strict=True):
+        assert len(before_row) == len(after_row)
+        for before, after in zip(before_row, after_row):
+            np.testing.assert_allclose(after, project_homography(homography, *before), atol=1e-4)
+
+
 if __name__ == "__main__":
     unittest.main()
