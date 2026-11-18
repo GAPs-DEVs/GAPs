@@ -190,6 +190,7 @@ class AdminPage(QWidget):
         down_arrow = make_arrow_png("down")
 
         # ── [LoginPage / SelectPage와 통일된 미니멀 라이트 테마 QSS] ──
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
             QWidget {
                 font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;

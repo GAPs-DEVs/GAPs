@@ -4,7 +4,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 if __package__ in {None, ""}:
@@ -12,6 +11,7 @@ if __package__ in {None, ""}:
 
 from app.config import DEFAULT_SCORE_PATH
 from app.ui.main_window import MainWindow
+from app.ui.theme import install_theme
 from tools.fretboard_detection_viewer import resolve_camera_calibration_path, resolve_model_path
 from vision.camera_calibration import load_camera_calibration
 
@@ -37,7 +37,7 @@ def main() -> int:
     camera_calibration = load_camera_calibration(calibration_path) if calibration_path is not None else None
 
     app = QApplication(sys.argv)
-    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    install_theme(app)
     window = MainWindow(
         model_path=model_path,
         score_path=Path(args.score_json).expanduser().resolve(),

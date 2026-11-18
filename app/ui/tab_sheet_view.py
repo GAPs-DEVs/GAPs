@@ -7,6 +7,8 @@ from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
+from app.ui.theme import themed_color
+
 
 DEFAULT_STEPS_PER_SCORE_LINE = 16
 
@@ -95,10 +97,10 @@ class TabSheetView(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(0, 0, self.width(), self.height(), QColor("#fbfbfc"))
+        painter.fillRect(0, 0, self.width(), self.height(), themed_color("#fbfbfc"))
 
         if not self.tab_data:
-            painter.setPen(QColor("#8e8e93"))
+            painter.setPen(themed_color("#8e8e93", text=True))
             painter.setFont(QFont("Arial", 12))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "TAB")
             return
@@ -112,13 +114,13 @@ class TabSheetView(QWidget):
         if not line_steps:
             return
 
-        painter.setPen(QColor("#8e8e93"))
+        painter.setPen(themed_color("#8e8e93", text=True))
         painter.setFont(QFont("Arial", 8, QFont.Weight.DemiBold))
         painter.drawText(8, row_top + 16, f"L{score_line}")
 
         for string_index in range(6):
             y = row_top + self.string_top + (string_index * self.string_spacing)
-            painter.setPen(QPen(QColor("#d1d1d6"), 1, Qt.PenStyle.SolidLine))
+            painter.setPen(QPen(themed_color("#d1d1d6"), 1, Qt.PenStyle.SolidLine))
             painter.drawLine(28, y, self.width() - 12, y)
 
         if self.selected_step in line_steps:
@@ -140,10 +142,10 @@ class TabSheetView(QWidget):
                 y_pos = row_top + self.string_top + ((string_number - 1) * self.string_spacing)
 
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor("#fbfbfc"))
+                painter.setBrush(themed_color("#fbfbfc"))
                 painter.drawRect(x_pos - 8, y_pos - 7, 16, 14)
 
-                painter.setPen(QColor("#111111"))
+                painter.setPen(themed_color("#111111", text=True))
                 painter.setFont(QFont("Helvetica", 10, QFont.Weight.Bold))
                 painter.drawText(
                     QRect(x_pos - self.note_radius, y_pos - self.note_radius, self.note_radius * 2, self.note_radius * 2),
