@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QFileDialog,
-    QMessageBox,
     QProgressDialog,
     QApplication,
     QFrame,
@@ -22,6 +21,7 @@ import guitarpro
 
 from app.api_client import api_client
 from app.features.score_library import RemoveScoreThread
+from app.ui.dialogs import ask_confirm, show_message
 
 MEASURES_PER_SCORE_LINE = 4
 STEPS_PER_FALLBACK_SCORE_LINE = 16
@@ -155,7 +155,7 @@ class ParsingThread(QThread):
 class ScoreCard(QFrame):
     """중앙 갤러리에 들어갈 개별 곡 카드"""
     def __init__(self, song_title, file_path, on_practice_cb, on_edit_cb,
-                 on_remove_cb=None, score_id=None, is_default=None):
+                 on_remove_cb=None, score_id=None, is_default=None, is_local=False):
         super().__init__()
         self.song_title = song_title
         self.file_path = file_path
@@ -164,6 +164,7 @@ class ScoreCard(QFrame):
         self.on_remove_cb = on_remove_cb
         self.score_id = score_id
         self.is_default = is_default
+        self.is_local = is_local
         self.init_ui()
 
     def init_ui(self):
@@ -218,12 +219,15 @@ class ScoreCard(QFrame):
             QPushButton:hover { background-color: #b91c1c; }
             QPushButton:disabled { background-color: #e5e7eb; color: #6b7280; }
         """)
-        self.remove_button.setEnabled(bool(self.score_id) and self.is_default is not True
+        self.remove_button.setEnabled((self.is_local or bool(self.score_id)) and self.is_default is not True
                                       and self.on_remove_cb is not None)
-        self.remove_button.setToolTip(
-            "개인 악보함에서 제거" if self.remove_button.isEnabled()
-            else "기본 악보 또는 서버 등록 정보를 확인할 수 없는 로컬 악보입니다."
-        )
+        if self.is_local:
+            tooltip = "로컬 악보 파일 삭제"
+        elif self.remove_button.isEnabled():
+            tooltip = "개인 악보함에서 제거"
+        else:
+            tooltip = "기본 악보 또는 서버 등록 정보를 확인할 수 없는 악보입니다."
+        self.remove_button.setToolTip(tooltip)
         self.remove_button.clicked.connect(lambda: self.on_remove_cb(self))
         top_box.addWidget(self.remove_button)
         layout.addLayout(top_box)
@@ -482,6 +486,7 @@ class SelectPage(QWidget):
                     on_remove_cb=self.remove_score,
                     score_id=metadata.get("score_id"),
                     is_default=metadata.get("is_default"),
+                    is_local=file.parent == directory,
                 )
                 card.setFixedWidth(self.CARD_WIDTH)
 
@@ -493,17 +498,19 @@ class SelectPage(QWidget):
     def remove_score(self, card):
         if self.remove_thread is not None:
             return
+        if card.is_local:
+            self.remove_local_score(card)
+            return
         if not api_client.access_token:
-            QMessageBox.warning(self, "로그인 필요", "로그인 후 악보를 삭제할 수 있습니다.")
+            show_message(self, "로그인이 필요합니다", "로그인 후 서버 악보를 삭제할 수 있습니다.", kind="warning")
             return
         if not card.score_id or card.is_default is True:
             return
-        answer = QMessageBox.question(
-            self, "악보 삭제", f"'{card.song_title}' 악보를 개인 악보함에서 삭제하시겠습니까?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
+        if not ask_confirm(
+            self, "악보를 삭제할까요?",
+            f"'{card.song_title}' 악보가 개인 악보함에서 제거됩니다.",
+            confirm_text="삭제", kind="danger", danger=True,
+        ):
             return
         self.remove_thread = RemoveScoreThread(
             card.score_id, card.file_path, self.db_mock_dir, self,
@@ -512,6 +519,25 @@ class SelectPage(QWidget):
         self.setEnabled(False)
         self.remove_thread.start()
 
+    def remove_local_score(self, card):
+        path = Path(card.file_path)
+        if path.parent != Path(self.db_mock_dir) or path.is_symlink() or not path.name.endswith("_parsed.json"):
+            show_message(self, "삭제할 수 없습니다", "로컬 악보 경로를 확인할 수 없습니다.", kind="warning")
+            return
+        if not ask_confirm(
+            self, "악보를 삭제할까요?",
+            f"'{card.song_title}' 악보가 이 기기에서 삭제됩니다. 원본 파일은 유지됩니다.",
+            confirm_text="삭제", kind="danger", danger=True,
+        ):
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            show_message(self, "삭제하지 못했습니다", "로컬 악보 파일을 삭제하는 중 문제가 발생했습니다.",
+                         kind="danger", detail=str(error))
+        self.refresh_song_list()
+        self.filter_song_cards(self.search_input.text())
+
     def on_score_removed(self):
         worker = self.remove_thread
         self.remove_thread = None
@@ -519,7 +545,7 @@ class SelectPage(QWidget):
         self.refresh_song_list()
         self.filter_song_cards(self.search_input.text())
         if worker.message:
-            QMessageBox.warning(self, "악보 삭제 결과", worker.message)
+            show_message(self, "악보 삭제 결과", worker.message, kind="warning")
         worker.deleteLater()
 
     def filter_song_cards(self, text):
@@ -541,7 +567,8 @@ class SelectPage(QWidget):
 
     def launch_practice_by_path(self, target_path):
         if not os.path.exists(target_path):
-            QMessageBox.critical(self, "파일 오류", f"선택한 악보 파일이 존재하지 않습니다:\n{target_path}")
+            show_message(self, "악보 파일을 찾을 수 없습니다", "선택한 악보 파일이 존재하지 않습니다.",
+                         kind="danger", detail=target_path)
             return
 
         print(f"[연습 시작 요청] 전달 악보: {target_path}")
@@ -640,6 +667,8 @@ class SelectPage(QWidget):
             raw_title = os.path.splitext(os.path.basename(base_file_path))[0]
             clean_title = raw_title.replace("_", " ").title()
             output_json_path = os.path.join(self.db_mock_dir, f"{raw_title.lower()}_parsed.json")
+            summary = f"'{os.path.basename(base_file_path)}' 악보 분석이 완료되었습니다."
+            kind, detail = "success", ""
 
             if os.path.exists(output_json_path):
                 try:
@@ -654,7 +683,6 @@ class SelectPage(QWidget):
                     )
 
                     if up_ok:
-                        message += "\n\n[클라우드 업로드 완료]"
                         score = up_res.get("score", up_res)
                         api_client.cache_server_score(
                             self.db_mock_dir, score.get("score_id") or score.get("id"),
@@ -662,18 +690,23 @@ class SelectPage(QWidget):
                         )
                         # This is the parser's generated cache, not the selected source file.
                         os.unlink(output_json_path)
-                        message += "\n서버 악보 보관함에 안전하게 등록되었습니다."
+                        summary += "\n서버 악보함에 등록되었습니다."
+                    elif up_res == "GUEST_MODE":
+                        summary += "\n게스트 모드라 이 기기에만 저장되었습니다."
                     else:
-                        message += f"\n\n[로컬 저장 완료 / 서버 업로드 실패]\n{up_res}"
+                        summary += "\n이 기기에는 저장했지만 서버 업로드에 실패했습니다."
+                        kind, detail = "warning", str(up_res)
 
                 except Exception as e:
                     print(f"[업로드 예외] {e}")
-                    message += f"\n(업로드 예외: {e})"
+                    summary += "\n서버 업로드 중 문제가 발생했습니다."
+                    kind, detail = "warning", str(e)
 
-            QMessageBox.information(self, "악보 등록 결과", message)
+            show_message(self, "악보를 추가했습니다", summary, kind=kind, detail=detail)
             self.refresh_song_list()
         else:
-            QMessageBox.critical(self, "파싱 실패", message)
+            show_message(self, "악보를 분석하지 못했습니다", "파일 형식이나 내용을 확인해 주세요.",
+                         kind="danger", detail=message)
             
     def clear_local_scores(self):
         """로컬 악보 저장소(self.db_mock_dir)의 캐시 파일들을 모두 삭제"""
