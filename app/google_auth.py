@@ -1,45 +1,82 @@
-# app/google_auth.py
-import socket
-from google_auth_oauthlib.flow import InstalledAppFlow
+"""Google browser login with credentials from the environment or a local .env."""
+import os
+from pathlib import Path
+import shlex
+import sys
 from wsgiref.simple_server import WSGIServer
 
-GOOGLE_CLIENT_ID = "29689475906-8esc2uvfuu6493rbnrho19v3kcu5mmmh.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET = "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"
+from google_auth_oauthlib.flow import InstalledAppFlow
 
-CLIENT_CONFIG = {
-    "web": {
-        "client_id": GOOGLE_CLIENT_ID,
-        "client_secret": GOOGLE_CLIENT_SECRET,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "redirect_uris": ["http://localhost:8080/"]
-    }
-}
 
+# A packaged app reads an external .env beside its executable.
+_ENV_PATH = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+             else Path(__file__).resolve().parents[1]) / ".env"
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/userinfo.profile"
+    "https://www.googleapis.com/auth/userinfo.profile",
 ]
 
-# 소켓 즉시 재사용(SO_REUSEADDR)이 켜진 WSGI 서버 클래스
+
+class GoogleAuthConfigurationError(ValueError):
+    """A local OAuth setting is missing or malformed."""
+
+
+def _load_client_config():
+    names = ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
+    values = {}
+    try:
+        if _ENV_PATH.exists():
+            for line in _ENV_PATH.read_text(encoding="utf-8-sig").splitlines():
+                key, separator, value = line.partition("=")
+                key = key.strip()
+                if separator and key in names:
+                    parts = shlex.split(value, comments=True, posix=True)
+                    if len(parts) > 1:
+                        raise ValueError()
+                    values[key] = parts[0] if parts else ""
+    except (OSError, UnicodeError, ValueError):
+        raise GoogleAuthConfigurationError(
+            ".env 파일의 Google 로그인 설정을 확인해주세요."
+        ) from None
+
+    for name in names:
+        values[name] = os.environ.get(name, values.get(name, "")).strip()
+    missing = [name for name in names if not values[name]]
+    if missing:
+        raise GoogleAuthConfigurationError(
+            "Google 로그인 설정이 없습니다. 프로젝트의 .env 파일 또는 환경변수에 "
+            + ", ".join(missing) + " 값을 설정해주세요."
+        )
+    return {
+        "web": {
+            "client_id": values["GOOGLE_CLIENT_ID"],
+            "client_secret": values["GOOGLE_CLIENT_SECRET"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost:8080/"],
+        }
+    }
+
+
 class ReusableWSGIServer(WSGIServer):
     allow_reuse_address = True
 
+
 def fetch_google_id_token():
-    """브라우저 기반 Google OAuth 인증 후 id_token 반환"""
+    """Return a fresh Google ID token, or None if browser authentication fails."""
+    config = _load_client_config()
     try:
-        flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, scopes=SCOPES)
-        
-        # server_class에 ReusableWSGIServer를 넘겨 TIME_WAIT 상태에서도 8080 포트를 즉시 재사용
+        flow = InstalledAppFlow.from_client_config(config, scopes=SCOPES)
         credentials = flow.run_local_server(
             host="localhost",
             port=8080,
             server_class=ReusableWSGIServer,
             prompt="select_account",
-            success_message="인증이 완료되었습니다! 창을 닫고 프로그램으로 돌아가세요."
+            success_message="인증이 완료되었습니다! 창을 닫고 프로그램으로 돌아가세요.",
         )
         return credentials.id_token
-    except Exception as e:
-        print(f"[구글 로그인 에러] {e}")
+    except Exception as error:
+        # Provider exception text can contain credential-bearing URLs.
+        print(f"[구글 로그인 에러] {type(error).__name__}")
         return None

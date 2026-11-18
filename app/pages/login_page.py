@@ -14,11 +14,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from app.api_client import api_client
-from app.google_auth import fetch_google_id_token
+from app.google_auth import GoogleAuthConfigurationError, fetch_google_id_token
 
 
-TEAM_GOOGLE_ID_TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6Ijk0M2EzYTVkN2Q5MTk2MjVhNDU0ZTQ4OWI3NWMyOWFkYWI1N2FjYmEiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJhenAiOiIyOTY4OTQ3NTkwNi04ZXNjMnV2ZnV1NjQ5M3JibnJobzE5djNrY3U1bW1taC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsImF1ZCI6IjI5Njg5NDc1OTA2LThlc2MydXZmdXU2NDkzcmJucmhvMTl2M2tjdTVtbW1oLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwic3ViIjoiMTEzMDc2OTM1MzcxMDMwNzQ1MjU5IiwiZW1haWwiOiJqdW5lLnN0b25lLmplb25AZ21haWwuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImF0X2hhc2giOiJhOGVoLVhtZ0ZfcWpTajlQTGZMN2pRIiwibmFtZSI6IuyghOykgOyEnSIsInBpY3R1cmUiOiJodHRwczovL2xoMy5nb29nbGV1c2VyY29udGVudC5jb20vYS9BQ2c4b2NLOEZCVkRHZkJrM3h6OEhEc1F0V1NnVzRFMUdYT0gwYllCdzlvc2dYd2R3LUR2bnc9czk2LWMiLCJnaXZlbl9uYW1lIjoi7KSA7ISdIiwiZmFtaWx5X25hbWUiOiLsoIQiLCJpYXQiOjE3OTE0NTEwMzEsImV4cCI6MTc5MTQ1NDYzMX0.HnNwkieAYOmnUILMG6WVn8r4_UZTYf0IScfMk-PYDHnaunanBYBMiLSaiNCCuyHv1k_hKFvRsk3bjW1l__AknITgUg69I2nyoqw1WU5HLq_NXIu_T1nSEYhJ8eq5fTGVHYPL6_x8ZHHKY-vXUxPfKk9tpXpowL19voeZlGxzKRGmGl1lg8tS255bzN0nndKYxxDk9Svq4u-9YXrg-qkdPL6iRDgtqlpmCGc3INdedUU5cabc16C4vbYHXKH1jjQYzvvVJ9x5-1Wej8ES2JzwChe_6VTpmgKAX8GCkLHDlNLwVSghPj7KK3WPdLzCF8sExa6ftQur0MQQknjp416EKA"
-SAVED_JWT_TOKEN = "eyJ1c2VyX2lkIjoiYjBjMTAyMDYtZmI4YS00NDkwLWI4ZDEtZjZiNmQ4MjNkNTJjIn0:1xEkvM:QoNqNJZY4nlgj0zQX6W4YajKU1RVkScjh1KygzA03wI"
 
 
 def hash_password(password: str) -> str:
@@ -339,66 +337,16 @@ class LoginPage(QWidget):
             else:
                 self.main_window.stacked_widget.setCurrentIndex(1)
 
-    # def handle_google_login(self):
-    #     """구글 로그인 트리거"""
-    #     # 💡 1. 백엔드 팀원과 협의한 Google Client ID 및 Redirect URI
-    #     # 팀원에게 받은 클라이언트 ID가 있다면 아래에 입력합니다.
-    #     google_client_id = "29689475906-8esc2uvfuu6493rbnrho19v3kcu5mmmh.apps.googleusercontent.com"
-
-    #     # [백엔드 연동 테스트용 시뮬레이션 토큰 또는 실제 OAuth 토큰]
-    #     mock_payload = {
-    #         "id_token": "mock_google_id_token_for_testing",
-    #         "email": "testuser@gmail.com"
-    #     }
-
-    #     # 실제 서버 POST /api/auth/google 전송
-    #     success, res = api_client.login_with_google(mock_payload)
-
-    #     if success:
-    #         print("[로그인 성공] JWT 토큰 확보 완료")
-    #         # 💡 로그인 성공 후 악보 선택 페이지(Index 1)로 이동 및 동기화 수행
-    #         if hasattr(self.main_window, "stacked_widget"):
-    #             self.main_window.stacked_widget.setCurrentIndex(1)
-    #             # SelectPage의 sync_with_server 메서드 자동 호출
-    #             select_page = self.main_window.stacked_widget.widget(1)
-    #             if hasattr(select_page, "sync_with_server"):
-    #                 select_page.sync_with_server()
-    #     else:
-    #         # 백엔드 서버가 아직 DB 세팅 중이거나 미완성일 경우 사용자 안내
-    #         reply = QMessageBox.question(
-    #             self,
-    #             "서버 연동 확인",
-    #             f"서버 응답:\n{res}\n\n서버 준비 전이므로 오프라인(로컬 모드)으로 계속 진행하시겠습니까?",
-    #             QMessageBox.Yes | QMessageBox.No
-    #         )
-    #         if reply == QMessageBox.Yes:
-    #             if hasattr(self.main_window, "stacked_widget"):
-    #                 self.main_window.stacked_widget.setCurrentIndex(1)
-    
-    # 10.08 19:20 
-    # def handle_google_login(self):
-    #     """구글 로그인 처리"""
-    #     # 백엔드 서버로 구글 ID 토큰 전송
-    #     success, res = api_client.login_with_google_id_token(TEAM_GOOGLE_ID_TOKEN)
-
-    #     if success:
-    #         # 1. 메인 보관함(Index 1)으로 이동
-    #         if hasattr(self.main_window, "stacked_widget"):
-    #             self.main_window.stacked_widget.setCurrentIndex(1)
-                
-    #             # 2. 보관함 화면의 서버 동기화 메서드 자동 실행
-    #             select_page = self.main_window.stacked_widget.widget(1)
-    #             if hasattr(select_page, "sync_with_server"):
-    #                 select_page.sync_with_server()
-    #     else:
-    #         QMessageBox.critical(self, "로그인 오류", f"서버 인증에 실패했습니다:\n{res}")
-
     def handle_google_login(self):
         """실제 구글 OAuth 브라우저 로그인 수행"""
         print("[로그인 시작] 브라우저를 열어 구글 계정 로그인을 진행합니다...")
 
         # 1. 브라우저가 자동으로 열리고 사용자가 계정을 선택하여 신규 id_token 발급
-        google_id_token = fetch_google_id_token()
+        try:
+            google_id_token = fetch_google_id_token()
+        except GoogleAuthConfigurationError as error:
+            QMessageBox.warning(self, "Google 로그인 설정 필요", str(error))
+            return
 
         if not google_id_token:
             QMessageBox.warning(
