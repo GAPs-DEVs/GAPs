@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 if __package__ in {None, ""}:
@@ -36,6 +37,7 @@ def main() -> int:
     camera_calibration = load_camera_calibration(calibration_path) if calibration_path is not None else None
 
     app = QApplication(sys.argv)
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
     window = MainWindow(
         model_path=model_path,
         score_path=Path(args.score_json).expanduser().resolve(),

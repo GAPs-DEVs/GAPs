@@ -18,6 +18,7 @@ from app.features.video import PracticeFrameStats, PracticeVideoWorker
 from app.ui.camera_panel import CameraPanel
 from app.ui.practice_panel import PracticePanel
 from app.ui.tab_sheet_view import PracticeTabStrip
+from app.ui.title_bar import IS_MACOS, TitleBar, apply_native_title_bar
 from app.ui.tracking_panel import TrackingPanel
 from app.ui.video_surface import VideoSurface
 from practice.score_steps import (
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Guitar Practice")
         self.resize(1440, 900)
+        apply_native_title_bar(self)
 
         self.model_path = model_path
         self.score_path = score_path
@@ -286,7 +288,20 @@ class MainWindow(QMainWindow):
 
         # ── [4단 라우팅 스택 조립] ──
         self.stacked_widget = QStackedWidget(self)
-        self.setCentralWidget(self.stacked_widget)
+
+        if IS_MACOS:
+            window_body = QWidget()
+            body_layout = QVBoxLayout(window_body)
+            body_layout.setContentsMargins(0, 0, 0, 0)
+            body_layout.setSpacing(0)
+            self.title_bar = TitleBar()
+            body_layout.addWidget(self.title_bar)
+            body_layout.addWidget(self.stacked_widget, stretch=1)
+            self.setCentralWidget(window_body)
+        else:
+            self.title_bar = None
+            self.setCentralWidget(self.stacked_widget)
+        self.stacked_widget.currentChanged.connect(self._handle_page_changed)
 
         # 2. 인스턴스 생성 (이 4줄이 먼저 와야 합니다)
         self.login_page = LoginPage(main_window=self)     # Index 0
@@ -314,9 +329,16 @@ class MainWindow(QMainWindow):
         self.refresh_auto_speed_controls()
         self.refresh_practice_display()
         self.refresh_marker_status()
+        self._handle_page_changed(self.stacked_widget.currentIndex())
 
     # 클래스 내부에 화면 전환 라우터 메서드 추가/보강
     # ── [화면 라우팅 컨트롤러] ──
+
+    PAGE_TITLES = ("로그인", "악보 선택", "연습", "악보 편집")
+
+    def _handle_page_changed(self, index: int) -> None:
+        page_title = self.PAGE_TITLES[index] if 0 <= index < len(self.PAGE_TITLES) else ""
+        self.setWindowTitle(f"Guitar Practice — {page_title}" if page_title else "Guitar Practice")
 
     def switch_to_select(self):
         """악보 선택 허브(Index 1)로 복귀"""

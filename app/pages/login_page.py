@@ -60,6 +60,7 @@ class LoginPage(QWidget):
 
     def init_ui(self):
         # ── [프로덕션급 미니멀 라이트 테마 QSS] ──
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
             QWidget {
                 font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
