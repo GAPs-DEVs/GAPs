@@ -8,11 +8,13 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QMainWindow, QWidget
 
+from app.ui.sidebar import paint_icon
 from app.ui.theme import theme, themed_color
 
 IS_MACOS = sys.platform == "darwin"
 
 TITLE_BAR_HEIGHT = 28
+TRAFFIC_LIGHTS_WIDTH = 72 if IS_MACOS else 8
 
 
 def apply_native_title_bar(window: QMainWindow) -> None:
@@ -25,12 +27,41 @@ def apply_native_title_bar(window: QMainWindow) -> None:
     window.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
 
 
-class ThemeToggleButton(QAbstractButton):
+class TitleBarButton(QAbstractButton):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(QSize(26, 20))
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.isDown() or self.underMouse():
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(themed_color("#dee2e6" if self.isDown() else "#e5e7eb"))
+            painter.drawRoundedRect(QRectF(self.rect()), 6, 6)
+        self.paint_glyph(painter, QPointF(self.width() / 2, self.height() / 2), themed_color("#4b5563", text=True))
+
+    def paint_glyph(self, painter: QPainter, center: QPointF, color) -> None:
+        raise NotImplementedError
+
+
+class SidebarToggleButton(TitleBarButton):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.set_open(True)
+
+    def set_open(self, open_: bool) -> None:
+        self.setToolTip("사이드바 닫기 (⌃⌘S)" if open_ else "사이드바 열기 (⌃⌘S)")
+
+    def paint_glyph(self, painter: QPainter, center: QPointF, color) -> None:
+        paint_icon(painter, "sidebar", QRectF(center.x() - 8, center.y() - 8, 16, 16), color)
+
+
+class ThemeToggleButton(TitleBarButton):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self.clicked.connect(self._toggle)
         manager = theme()
         if manager is not None:
@@ -50,25 +81,11 @@ class ThemeToggleButton(QAbstractButton):
         self.setToolTip("라이트 모드로 전환" if self._is_dark() else "다크 모드로 전환")
         self.update()
 
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        if self.isDown():
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(themed_color("#dee2e6"))
-            painter.drawRoundedRect(QRectF(self.rect()), 6, 6)
-        elif self.underMouse():
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(themed_color("#e9ecef"))
-            painter.drawRoundedRect(QRectF(self.rect()), 6, 6)
-
-        icon_color = themed_color("#4b5563", text=True)
-        center = QPointF(self.width() / 2, self.height() / 2)
+    def paint_glyph(self, painter: QPainter, center: QPointF, color) -> None:
         if self._is_dark():
-            self._paint_sun(painter, center, icon_color)
+            self._paint_sun(painter, center, color)
         else:
-            self._paint_moon(painter, center, icon_color)
+            self._paint_moon(painter, center, color)
 
     def _paint_sun(self, painter: QPainter, center: QPointF, color) -> None:
         painter.setPen(Qt.PenStyle.NoPen)

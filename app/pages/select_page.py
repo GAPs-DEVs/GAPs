@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QLineEdit,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QEvent, Qt, QThread, Signal
 import guitarpro
 
 from app.api_client import api_client
@@ -298,6 +298,7 @@ class SelectPage(QWidget):
 
     def init_ui(self):
         # ── [전체 미니멀 라이트 테마 QSS] ──
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
             QWidget {
                 font-family: 'Apple SD Gothic Neo', 'Pretendard', 'Malgun Gothic', 'Segoe UI', sans-serif;
@@ -413,92 +414,31 @@ class SelectPage(QWidget):
         self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         self.scroll_area.setWidget(self.grid_container)
-        body_layout.addWidget(self.scroll_area, stretch=3)
-
-        # 우측: 관리 및 업로드 사이드 패널 (너비 290px 고정)
-        right_panel = QFrame()
-        right_panel.setObjectName("card_panel")
-        right_panel.setFixedWidth(290)
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(20, 22, 20, 20)
-        right_layout.setSpacing(14)
-
-        lbl_side_title = QLabel("악보 관리")
-        lbl_side_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #111827;")
-        right_layout.addWidget(lbl_side_title)
-
-        lbl_upload_desc = QLabel("새로운 기타프로 파일(.gp3, .gp5)을 파싱하여 보관함에 등록합니다.")
-        lbl_upload_desc.setWordWrap(True)
-        lbl_upload_desc.setStyleSheet("color: #6b7280; font-size: 12px; line-height: 1.4;")
-        right_layout.addWidget(lbl_upload_desc)
-
-        # 새 악보 등록 버튼
-        btn_upload = QPushButton("+ 새 악보 등록 (GuitarPro)")
-        btn_upload.setCursor(Qt.PointingHandCursor)
-        btn_upload.setStyleSheet("""
-            QPushButton {
-                background-color: #111827;
-                color: #ffffff;
-                border: 1px solid #111827;
-                border-radius: 8px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 10px 14px;
-            }
-            QPushButton:hover { background-color: #27272a; }
-        """)
-        btn_upload.clicked.connect(lambda: self.start_async_parsing("GP"))
-        right_layout.addWidget(btn_upload)
-
-        # 구분선
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: #f1f3f5;")
-        right_layout.addWidget(sep)
-
-        # 팁 카드
-        tip_box = QFrame()
-        tip_box.setStyleSheet("background-color: #f8f9fa; border-radius: 8px; padding: 10px;")
-        tip_layout = QVBoxLayout(tip_box)
-        tip_layout.setContentsMargins(10, 10, 10, 10)
-        tip_layout.setSpacing(4)
-        lbl_tip_title = QLabel("연습 팁")
-        lbl_tip_title.setStyleSheet("font-size: 12px; font-weight: 700; color: #374151;")
-        lbl_tip_desc = QLabel("원하는 곡의 '연습 시작'을 누르면 웹캠을 통한 지판 운지 판정이 바로 시작됩니다.")
-        lbl_tip_desc.setWordWrap(True)
-        lbl_tip_desc.setStyleSheet("font-size: 11.5px; color: #6b7280;")
-        tip_layout.addWidget(lbl_tip_title)
-        tip_layout.addWidget(lbl_tip_desc)
-        right_layout.addWidget(tip_box)
-
-        right_layout.addStretch(1)
-
-        # 하단: 로그인 화면 복귀 (로그아웃)
-        btn_logout = QPushButton("로그아웃")
-        btn_logout.setCursor(Qt.PointingHandCursor)
-        btn_logout.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                color: #6b7280;
-                border: 1px solid #ced4da;
-                border-radius: 8px;
-                font-size: 12.5px;
-                font-weight: 600;
-                padding: 10px;
-            }
-            QPushButton:hover {
-                background-color: #f8f9fa;
-                color: #111827;
-                border-color: #adb5bd;
-            }
-        """)
-        btn_logout.clicked.connect(self.go_to_login)
-        right_layout.addWidget(btn_logout)
-
-        body_layout.addWidget(right_panel)
+        self.scroll_area.viewport().installEventFilter(self)
+        body_layout.addWidget(self.scroll_area, stretch=1)
         container_layout.addLayout(body_layout, stretch=1)
 
         outer_layout.addWidget(container)
+
+    CARD_WIDTH = 275
+
+    def _grid_columns(self):
+        if not hasattr(self, "scroll_area"):
+            return 2
+        margins = self.grid_layout.contentsMargins()
+        available = self.scroll_area.viewport().width() - margins.left() - margins.right()
+        spacing = self.grid_layout.horizontalSpacing()
+        return max(1, (available + spacing) // (self.CARD_WIDTH + spacing))
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is self.scroll_area.viewport()
+            and event.type() == QEvent.Type.Resize
+            and hasattr(self, "cards")
+            and self._grid_columns() != getattr(self, "_layout_columns", None)
+        ):
+            self.filter_song_cards(self.search_input.text())
+        return super().eventFilter(watched, event)
 
     def refresh_song_list(self):
         """로컬 악보 디렉토리를 스캔하여 카드 그리드로 동적 생성"""
@@ -517,7 +457,8 @@ class SelectPage(QWidget):
 
             self.lbl_count.setText(f"총 {len(files)}개의 악보")
 
-            columns = 2  # 우측 패널이 있으므로 좌측은 2열 카드가 시각적으로 가장 안정적임
+            columns = self._grid_columns()
+            self._layout_columns = columns
             for idx, file in enumerate(files):
                 song_title = file.name.replace("_parsed.json", "")
                 file_path = str(file)
@@ -542,7 +483,7 @@ class SelectPage(QWidget):
                     score_id=metadata.get("score_id"),
                     is_default=metadata.get("is_default"),
                 )
-                card.setFixedWidth(275)
+                card.setFixedWidth(self.CARD_WIDTH)
 
                 row = idx // columns
                 col = idx % columns
@@ -584,7 +525,8 @@ class SelectPage(QWidget):
     def filter_song_cards(self, text):
         query = text.strip().lower()
         visible_idx = 0
-        columns = 2
+        columns = self._grid_columns()
+        self._layout_columns = columns
 
         for song_title, card in self.cards:
             if not query or query in song_title:
