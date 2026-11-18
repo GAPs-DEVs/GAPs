@@ -1137,7 +1137,7 @@ class MainWindow(QMainWindow):
         was_running = self.practice_running
         mode = self.current_mode()
         self._cancel_pending_interactive_advance()
-        if mode == "interactive":
+        if mode == "interactive" and not was_running:
             self._stop_audio_worker()
         elif mode == "auto":
             self.auto_flow_timer.stop()
@@ -1263,6 +1263,7 @@ class MainWindow(QMainWindow):
 
         # 2. 기존 워커 스레드 정지
         self.stop_practice()
+        self.audio_controller.shutdown()
         self.stop_video()
 
         super().closeEvent(event)
