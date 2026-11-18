@@ -494,7 +494,6 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(1)
 
     def switch_to_practice(self, json_path: str):
-        print(f"🔥🔥 [DEBUG] switch_to_practice 실제로 호출됨! 이동할 목표 Index: 2, 현재 파일: {__file__}")
         """선택한 악보 JSON을 로드하고 연습 화면(Index 2)으로 전환"""
         print(f"[switch_to_practice 진입] 경로: {json_path}")
         self.score_path = Path(json_path)
@@ -518,7 +517,6 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar_recent()
 
     def switch_to_admin(self, json_path: str = None):
-        print(f"🔥🔥 [DEBUG] switch_to_admin 실제로 호출됨! 이동할 목표 Index: 3, 현재 파일: {__file__}")
         """악보 정밀 에디터(Index 3)로 전환"""
         print(f"[switch_to_admin 진입] 경로: {json_path}")
         if json_path and os.path.exists(json_path):
@@ -1088,7 +1086,6 @@ class MainWindow(QMainWindow):
         # 1. 다음 스텝으로 넘어가기 전, 현재 스텝을 정답(correct)으로 수집기에 기록
         if getattr(self, "recorder", None):
             cur_step = self.current_step()
-            print("🔥🔥 [DEBUG cur_step]", vars(cur_step) if hasattr(cur_step, "__dict__") else cur_step)
             
             # (1) cur_step 객체 자체 속성 탐색
             step_id = getattr(cur_step, "score_step_id", None)
