@@ -20,7 +20,7 @@ from app.ui.practice_panel import PracticePanel
 from app.ui.tab_sheet_view import PracticeTabStrip
 from app.ui.sidebar import Sidebar
 from app.ui.title_bar import TITLE_BAR_HEIGHT, TRAFFIC_LIGHTS_WIDTH, SidebarToggleButton, TitleBar, apply_native_title_bar
-from app.ui.tracking_panel import TrackingPanel
+from app.ui.tracking_panel import DEFAULT_STRING_MARGIN_PERCENT, TrackingPanel
 from app.ui.video_surface import VideoSurface
 from practice.score_steps import (
     PracticeStep,
@@ -105,8 +105,6 @@ class MainWindow(QMainWindow):
         self.stop_video_button = self.camera_panel.stop_button
         self.start_video_button.clicked.connect(self.start_video)
         self.stop_video_button.clicked.connect(self.stop_video)
-        self.reverse_checkbox = self.camera_panel.reverse_checkbox
-        self.reverse_checkbox.stateChanged.connect(self.handle_reverse_change)
         self.video_status_label = self.camera_panel.status_label
         self.marker_status_label = self.camera_panel.marker_status_label
 
@@ -118,6 +116,10 @@ class MainWindow(QMainWindow):
         self.select_lines_button.clicked.connect(self.begin_line_selection)
         self.clear_tracking_button.clicked.connect(self.clear_manual_tracking)
         self.tracking_panel.manual_points_checkbox.toggled.connect(self.handle_manual_selection_change)
+        self.tracking_panel.set_string_margin_percent(
+            QSettings("GAPs", "GuitarPractice").value("string_margin_percent", DEFAULT_STRING_MARGIN_PERCENT, type=int)
+        )
+        self.tracking_panel.string_margin_slider.valueChanged.connect(self.handle_string_margin_change)
 
         self.practice_panel = PracticePanel()
         self.microphone_combo = self.practice_panel.microphone_combo
@@ -694,9 +696,10 @@ class MainWindow(QMainWindow):
         finally:
             self.microphone_combo.blockSignals(False)
 
-    def handle_reverse_change(self, _: int) -> None:
+    def handle_string_margin_change(self, percent: int) -> None:
+        QSettings("GAPs", "GuitarPractice").setValue("string_margin_percent", percent)
         if self.video_worker is not None:
-            self.video_worker.set_reverse_strings(self.reverse_checkbox.isChecked())
+            self.video_worker.set_string_margin_ratio(percent / 100.0)
 
     def handle_reference_fret_change(self, value: int) -> None:
         if self._updating_reference_fret_spin:
@@ -744,12 +747,13 @@ class MainWindow(QMainWindow):
             conf_threshold=DEFAULT_CONF_THRESHOLD,
             image_size=DEFAULT_IMAGE_SIZE,
             current_step=self.current_step(),
-            reverse_strings=self.reverse_checkbox.isChecked(),
+            reverse_strings=False,
             show_edge_guides=False,
             edge_supported_notes_only=False,
             camera_calibration=self.camera_calibration,
             parent=self,
         )
+        self.video_worker.set_string_margin_ratio(self.tracking_panel.string_margin_slider.value() / 100.0)
         self.video_worker.frame_ready.connect(self.update_frame)
         self.video_worker.error_message.connect(self.handle_video_error)
         self.video_worker.finished.connect(self.on_video_worker_finished)

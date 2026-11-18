@@ -28,6 +28,7 @@ from tools.fretboard_detection_viewer import (
 from vision.camera_calibration import CameraCalibration
 from vision.fretboard_edge_refinement import EdgeRefinementResult, StringLineTracker, refine_grid_with_edge_lines_diagnostics
 from vision.fretboard_mapping import (
+    PLAYABLE_EDGE_MARGIN_RATIO,
     DetectedLine,
     FretboardTracker,
     NoteMarker,
@@ -36,6 +37,7 @@ from vision.fretboard_mapping import (
     StableFretboardGrid,
     build_fretboard_grid,
     count_detected_classes,
+    with_string_margin,
 )
 from vision.fretboard_motion import HybridSelectedLineTracker, HybridTrackingFrame, filter_visible_markers
 from vision.fretboard_recovery import BackgroundFretboardRecovery
@@ -117,6 +119,7 @@ class PracticeVideoWorker(QThread):
         self.image_size = image_size
         self.current_step = current_step
         self.reverse_strings = reverse_strings
+        self.string_margin_ratio = PLAYABLE_EDGE_MARGIN_RATIO
         self.show_edge_guides = show_edge_guides
         self.edge_supported_notes_only = edge_supported_notes_only
         self.camera_calibration = camera_calibration
@@ -164,6 +167,10 @@ class PracticeVideoWorker(QThread):
 
     def set_reverse_strings(self, reverse_strings: bool) -> None:
         self.reverse_strings = reverse_strings
+        self.note_marker_tracker.clear()
+
+    def set_string_margin_ratio(self, margin_ratio: float) -> None:
+        self.string_margin_ratio = margin_ratio
         self.note_marker_tracker.clear()
 
     def set_show_edge_guides(self, show_edge_guides: bool) -> None:
@@ -489,6 +496,8 @@ class PracticeVideoWorker(QThread):
         # Calibrated guides use only the registered model. Per-frame edge
         # diagnostics do not affect their coordinates; keep them in the viewer.
         stable_grid = tracking_result.stable_grid
+        if self.string_margin_ratio != PLAYABLE_EDGE_MARGIN_RATIO:
+            stable_grid = with_string_margin(stable_grid, self.string_margin_ratio)
         edge_refinement = None
         note_markers = (
             self._build_current_note_markers(stable_grid, edge_refinement, calibrated=True)

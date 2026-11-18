@@ -3,9 +3,15 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QPushButton, QScrollArea, QSpinBox, QStyle, QStyleOptionGroupBox, QToolButton, QToolTip, QVBoxLayout, QWidget,
+    QLabel, QPushButton, QScrollArea, QSlider, QSpinBox, QStyle, QStyleOptionGroupBox, QToolButton, QToolTip,
+    QVBoxLayout, QWidget,
 )
 from PySide6.QtGui import QValidator
+
+from vision.fretboard_mapping import PLAYABLE_EDGE_MARGIN_RATIO
+
+DEFAULT_STRING_MARGIN_PERCENT = round(PLAYABLE_EDGE_MARGIN_RATIO * 100)
+MAX_STRING_MARGIN_PERCENT = 25
 
 
 class OptionalFretSpinBox(QSpinBox):
@@ -185,6 +191,8 @@ class TrackingPanel(QGroupBox):
         "<p><b>* 선이 인식되지 않을 때</b><br>"
         "‘수동으로 양 끝점 지정’을 선택하세요. 너트부터 중간 프렛, 끝 프렛 순서대로 각 선의 양 끝점을 총 여섯 번 클릭합니다(위아래 상관 없음).</p>"
         "<p><b>* 다시 맞추려면</b><br>‘맞춤 초기화’를 누르면 맞춤 결과와 선택을 지우고 다시 시작할 수 있습니다. 입력한 프렛 번호는 유지됩니다.</p>"
+        "<p><b>* 가이드 점이 줄과 어긋날 때</b><br>"
+        "‘지판 여백’으로 1번·6번 줄과 지판 가장자리 사이 간격을 조절하세요. 넥이 넓은 기타는 값을 키우고, 좁은 기타는 줄이면 됩니다. 맞춤을 다시 하지 않아도 바로 반영됩니다.</p>"
     )
 
     def __init__(self) -> None:
@@ -233,11 +241,33 @@ class TrackingPanel(QGroupBox):
         self.manual_points_checkbox = QCheckBox("수동으로 양 끝점 지정")
         self.manual_points_checkbox.setToolTip("너트·중간 프렛·끝 기준 프렛의 양 끝점을 총 여섯 번 클릭합니다.")
         layout.addWidget(self.manual_points_checkbox, 6, 0, 1, 2)
+
+        self.string_margin_slider = QSlider(Qt.Orientation.Horizontal)
+        self.string_margin_slider.setRange(0, MAX_STRING_MARGIN_PERCENT)
+        self.string_margin_slider.setSingleStep(1)
+        self.string_margin_slider.setPageStep(5)
+        self.string_margin_slider.setAccessibleName("지판 여백")
+        self.string_margin_slider.setToolTip("1번·6번 줄과 지판 가장자리 사이 간격입니다. 가이드 점이 줄과 어긋나면 조절하세요.")
+        self.string_margin_value_label = QLabel()
+        self.string_margin_value_label.setMinimumWidth(36)
+        self.string_margin_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.string_margin_slider.valueChanged.connect(
+            lambda value: self.string_margin_value_label.setText(f"{value}%")
+        )
+        margin_label = QLabel("지판 여백")
+        margin_label.setBuddy(self.string_margin_slider)
+        margin_row = QHBoxLayout()
+        margin_row.addWidget(self.string_margin_slider, 1)
+        margin_row.addWidget(self.string_margin_value_label)
+        layout.addWidget(margin_label, 7, 0)
+        layout.addLayout(margin_row, 7, 1)
+        self.set_string_margin_percent(DEFAULT_STRING_MARGIN_PERCENT)
         QWidget.setTabOrder(self.middle_fret_spin, self.reference_fret_spin)
         QWidget.setTabOrder(self.reference_fret_spin, self.select_lines_button)
         QWidget.setTabOrder(self.select_lines_button, self.clear_tracking_button)
         QWidget.setTabOrder(self.clear_tracking_button, self.manual_points_checkbox)
-        QWidget.setTabOrder(self.manual_points_checkbox, self.help_button)
+        QWidget.setTabOrder(self.manual_points_checkbox, self.string_margin_slider)
+        QWidget.setTabOrder(self.string_margin_slider, self.help_button)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -248,6 +278,10 @@ class TrackingPanel(QGroupBox):
         )
         self.help_button.move(self.width() - self.help_button.width() - 12,
                               max(0, title_rect.center().y() - self.help_button.height() // 2))
+
+    def set_string_margin_percent(self, percent: int) -> None:
+        self.string_margin_slider.setValue(max(0, min(MAX_STRING_MARGIN_PERCENT, int(percent))))
+        self.string_margin_value_label.setText(f"{self.string_margin_slider.value()}%")
 
     def clear_errors(self, *_args) -> None:
         for error in (self.middle_error, self.reference_error):

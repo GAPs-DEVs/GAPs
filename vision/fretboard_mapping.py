@@ -1501,14 +1501,26 @@ def median_line(lines: Sequence[DetectedLine], kind: str) -> DetectedLine:
     )
 
 
-def compute_string_crossings(line: DetectedLine) -> tuple[tuple[float, float], ...]:
+def compute_string_crossings(
+    line: DetectedLine,
+    margin_ratio: float = PLAYABLE_EDGE_MARGIN_RATIO,
+) -> tuple[tuple[float, float], ...]:
     start = point_array(line.p0)
     end = point_array(line.p1)
-    trimmed_start = interpolate_points(start, end, PLAYABLE_EDGE_MARGIN_RATIO)
-    trimmed_end = interpolate_points(start, end, 1.0 - PLAYABLE_EDGE_MARGIN_RATIO)
+    trimmed_start = interpolate_points(start, end, margin_ratio)
+    trimmed_end = interpolate_points(start, end, 1.0 - margin_ratio)
     return tuple(
         point_tuple(interpolate_points(trimmed_start, trimmed_end, ratio))
         for ratio in np.linspace(0.0, 1.0, STRING_COUNT, dtype=np.float32)
+    )
+
+
+def with_string_margin(grid: StableFretboardGrid, margin_ratio: float) -> StableFretboardGrid:
+    lines = (grid.nut_line, *grid.ordered_fret_lines)
+    return StableFretboardGrid(
+        nut_line=grid.nut_line,
+        ordered_fret_lines=grid.ordered_fret_lines,
+        string_crossings=tuple(compute_string_crossings(line, margin_ratio) for line in lines),
     )
 
 
