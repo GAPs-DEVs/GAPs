@@ -691,7 +691,7 @@ class SelectPage(QWidget):
                         os.unlink(output_json_path)
                         summary += "\n서버 악보함에 등록되었습니다."
                     elif up_res == "GUEST_MODE":
-                        summary += "\n게스트 모드라 이 기기에만 저장되었습니다."
+                        summary += "\n[게스트 모드] 로컬 저장되었습니다."
                     else:
                         summary += "\n이 기기에는 저장했지만 서버 업로드에 실패했습니다."
                         kind, detail = "warning", str(up_res)

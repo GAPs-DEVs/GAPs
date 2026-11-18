@@ -21,6 +21,12 @@ _KINDS = {
     "question": ("?", "#374151", "#f1f3f5"),
 }
 
+CARD_WIDTH = 400
+CARD_MARGIN = 24
+ICON_SIZE = 36
+BODY_SPACING = 14
+TEXT_WIDTH = CARD_WIDTH - CARD_MARGIN * 2 - ICON_SIZE - BODY_SPACING
+
 _STYLE = """
 QDialog#app_dialog {
     background-color: rgba(15, 23, 42, 70);
@@ -107,7 +113,7 @@ class AppDialog(QDialog):
 
         card = QFrame()
         card.setObjectName("dialog_card")
-        card.setFixedWidth(400)
+        card.setFixedWidth(CARD_WIDTH)
         shadow = QGraphicsDropShadowEffect(card)
         shadow.setBlurRadius(32)
         shadow.setOffset(0, 8)
@@ -116,14 +122,14 @@ class AppDialog(QDialog):
         outer.addWidget(card)
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(24, 24, 24, 20)
+        layout.setContentsMargins(CARD_MARGIN, CARD_MARGIN, CARD_MARGIN, 20)
         layout.setSpacing(16)
 
         body = QHBoxLayout()
-        body.setSpacing(14)
+        body.setSpacing(BODY_SPACING)
         glyph, fg, bg = _KINDS.get(kind, _KINDS["info"])
         icon = QLabel(glyph)
-        icon.setFixedSize(36, 36)
+        icon.setFixedSize(ICON_SIZE, ICON_SIZE)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(
             f"background-color: {bg}; color: {fg}; border-radius: 18px; font-size: 16px; font-weight: 800;"
@@ -166,6 +172,12 @@ class AppDialog(QDialog):
         confirm.clicked.connect(self.accept)
         buttons.addWidget(confirm)
         layout.addLayout(buttons)
+
+        for label in card.findChildren(QLabel):
+            if label.wordWrap():
+                label.ensurePolished()
+                label.setFixedWidth(TEXT_WIDTH)
+                label.setMinimumHeight(label.heightForWidth(TEXT_WIDTH))
         self._confirm = confirm
 
     def showEvent(self, event) -> None:
