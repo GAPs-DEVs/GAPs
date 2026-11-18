@@ -163,7 +163,6 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setStyleSheet("""
             QWidget {
-                font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
                 background-color: #f8f9fa;
                 color: #212529;
             }

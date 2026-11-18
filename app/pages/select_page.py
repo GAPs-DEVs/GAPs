@@ -305,7 +305,6 @@ class SelectPage(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
             QWidget {
-                font-family: 'Apple SD Gothic Neo', 'Pretendard', 'Malgun Gothic', 'Segoe UI', sans-serif;
                 background-color: #f8f9fa;
                 color: #212529;
             }

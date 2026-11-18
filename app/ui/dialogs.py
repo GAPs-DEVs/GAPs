@@ -29,7 +29,6 @@ QFrame#dialog_card {
 }
 QLabel {
     background-color: transparent;
-    font-family: 'Apple SD Gothic Neo', 'Pretendard', 'Malgun Gothic', 'Segoe UI', sans-serif;
 }
 QLabel#dialog_title {
     font-size: 15px;
@@ -49,7 +48,6 @@ QLabel#dialog_detail {
     padding: 8px 10px;
 }
 QPushButton {
-    font-family: 'Apple SD Gothic Neo', 'Pretendard', 'Malgun Gothic', 'Segoe UI', sans-serif;
     font-size: 13px;
     font-weight: 600;
     border-radius: 8px;
