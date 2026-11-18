@@ -13,6 +13,63 @@ from app.ui.theme import themed_color
 DEFAULT_STEPS_PER_SCORE_LINE = 16
 
 
+def scrollbar_qss(track: str) -> str:
+    return f"""
+        QScrollBar:horizontal {{
+            background: {track};
+            height: 14px;
+            margin: 0px;
+            border: none;
+            border-left: 10px solid {track};
+            border-right: 10px solid {track};
+            border-bottom: 4px solid {track};
+        }}
+        QScrollBar:vertical {{
+            background: {track};
+            width: 14px;
+            margin: 0px;
+            border: none;
+            border-top: 10px solid {track};
+            border-bottom: 10px solid {track};
+            border-right: 4px solid {track};
+        }}
+        QScrollBar::handle:horizontal {{
+            background: #cbd5e1;
+            border-radius: 3px;
+            min-width: 40px;
+            margin: 2px 0px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: #cbd5e1;
+            border-radius: 3px;
+            min-height: 32px;
+            margin: 0px 2px;
+        }}
+        QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover {{
+            background: #94a3b8;
+        }}
+        QScrollBar::handle:horizontal:pressed, QScrollBar::handle:vertical:pressed {{
+            background: #6b7280;
+        }}
+        QScrollBar::add-line, QScrollBar::sub-line {{
+            width: 0px;
+            height: 0px;
+            border: none;
+            background: none;
+        }}
+        QScrollBar::add-page, QScrollBar::sub-page {{
+            background: none;
+        }}
+        QAbstractScrollArea::corner {{
+            background: transparent;
+            border: none;
+        }}
+    """
+
+
+TAB_SCROLLBAR_QSS = scrollbar_qss("#fbfbfc")
+
+
 def _note_int(note: Mapping[str, object], key: str, default: int = 0) -> int:
     try:
         return int(note.get(key, default))
@@ -262,6 +319,7 @@ class PracticeTabStrip(QFrame):
                 border: none;
             }
             """
+            + TAB_SCROLLBAR_QSS
         )
 
         self.title_label = QLabel("TAB")

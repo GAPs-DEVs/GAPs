@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QRect, Signal, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPixmap, QPolygonF
 
-from app.ui.tab_sheet_view import TabSheetView
+from app.ui.tab_sheet_view import TAB_SCROLLBAR_QSS, TabSheetView, scrollbar_qss
 
 
 def make_arrow_png(direction: str, color="#374151", size=12) -> str:
@@ -414,13 +414,14 @@ class AdminPage(QWidget):
             QScrollArea {
                 border: 1px solid #e9ecef;
                 border-radius: 8px;
-                background-color: #ffffff;
+                background-color: #fbfbfc;
             }
-        """)
+        """ + TAB_SCROLLBAR_QSS)
 
         self.tab_sheet_view = TabSheetView()
         self.scroll_area.setWidget(self.tab_sheet_view)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         monitor_layout.addWidget(self.fretboard_monitor, stretch=4)
         monitor_layout.addWidget(self.scroll_area, stretch=5)
@@ -431,6 +432,7 @@ class AdminPage(QWidget):
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["연주 순서 (Step)", "기타 줄 (String)", "프렛 번호 (Fret)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setStyleSheet(scrollbar_qss("#ffffff"))
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
         self.table.cellChanged.connect(self.on_cell_changed)
         left_layout.addWidget(self.table, stretch=1)
