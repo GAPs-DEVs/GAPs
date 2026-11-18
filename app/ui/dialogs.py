@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
@@ -22,6 +22,9 @@ _KINDS = {
 }
 
 _STYLE = """
+QDialog#app_dialog {
+    background-color: rgba(15, 23, 42, 70);
+}
 QFrame#dialog_card {
     background-color: #ffffff;
     border: 1px solid #e5e7eb;
@@ -88,18 +91,19 @@ class AppDialog(QDialog):
     def __init__(self, parent: QWidget | None, title: str, message: str, kind: str = "info",
                  detail: str = "", confirm_text: str = "확인", cancel_text: str | None = None,
                  danger: bool = False) -> None:
-        super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.Dialog
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._host = parent.window() if parent is not None else None
+        super().__init__(self._host)
+        if self._host is not None:
+            self.setWindowFlags(Qt.WindowType.Widget)
+            self._host.installEventFilter(self)
+        self.setObjectName("app_dialog")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setModal(True)
         self.setStyleSheet(_STYLE)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 20, 24, 28)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         card = QFrame()
         card.setObjectName("dialog_card")
@@ -162,14 +166,24 @@ class AppDialog(QDialog):
         confirm.clicked.connect(self.accept)
         buttons.addWidget(confirm)
         layout.addLayout(buttons)
+        self._confirm = confirm
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        host = self.parentWidget().window() if self.parentWidget() else None
-        if host is not None:
-            self.adjustSize()
-            center = host.frameGeometry().center()
-            self.move(center.x() - self.width() // 2, center.y() - self.height() // 2)
+        if self._host is not None:
+            self.setGeometry(self._host.rect())
+            self.raise_()
+        self._confirm.setFocus()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._host and event.type() == QEvent.Type.Resize:
+            self.setGeometry(self._host.rect())
+        return super().eventFilter(watched, event)
+
+    def done(self, result: int) -> None:
+        if self._host is not None:
+            self._host.removeEventFilter(self)
+        super().done(result)
 
 
 def show_message(parent: QWidget | None, title: str, message: str = "", kind: str = "info",
