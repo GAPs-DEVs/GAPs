@@ -4,10 +4,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
-
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.utils.macos_sdk import relaunch_with_latest_sdk
+
+if __name__ == "__main__":
+    relaunch_with_latest_sdk()
+
+from PySide6.QtWidgets import QApplication
 
 from app.config import DEFAULT_SCORE_PATH
 from app.ui.fonts import apply_app_font

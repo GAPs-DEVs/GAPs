@@ -4,7 +4,7 @@ import math
 import sys
 import warnings
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QMainWindow, QWidget
 
@@ -17,6 +17,7 @@ IS_WINDOWS = sys.platform == "win32"
 TITLE_BAR_HEIGHT = 32 if IS_WINDOWS else 28
 CAPTION_BUTTON_WIDTH = 46
 TRAFFIC_LIGHTS_WIDTH = 72 if IS_MACOS else 8
+TRAFFIC_LIGHTS_GAP = 9
 
 
 def apply_native_title_bar(window: QMainWindow) -> None:
@@ -32,6 +33,19 @@ def apply_native_title_bar(window: QMainWindow) -> None:
         window.setWindowFlag(Qt.WindowType.ExpandedClientAreaHint, True)
     window.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
     window.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
+
+
+def native_title_bar_layout(window: QMainWindow, button_size: QSize) -> tuple[int, QPoint] | None:
+    if not IS_MACOS:
+        return None
+    from app.ui.mac_window import hide_window_title, traffic_light_metrics
+
+    hide_window_title(window)
+    metrics = traffic_light_metrics(window)
+    if metrics is None:
+        return None
+    height, lights_right, lights_center_y = metrics
+    return height, QPoint(round(lights_right) + TRAFFIC_LIGHTS_GAP, round(lights_center_y - button_size.height() / 2))
 
 
 class TitleBarButton(QAbstractButton):

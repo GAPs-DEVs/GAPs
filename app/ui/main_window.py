@@ -19,7 +19,14 @@ from app.ui.camera_panel import CameraPanel
 from app.ui.practice_panel import PracticePanel
 from app.ui.tab_sheet_view import PracticeTabStrip
 from app.ui.sidebar import Sidebar
-from app.ui.title_bar import TITLE_BAR_HEIGHT, TRAFFIC_LIGHTS_WIDTH, SidebarToggleButton, TitleBar, apply_native_title_bar
+from app.ui.title_bar import (
+    TITLE_BAR_HEIGHT,
+    TRAFFIC_LIGHTS_WIDTH,
+    SidebarToggleButton,
+    TitleBar,
+    apply_native_title_bar,
+    native_title_bar_layout,
+)
 from app.ui.tracking_panel import DEFAULT_STRING_MARGIN_PERCENT, TrackingPanel
 from app.ui.video_surface import VideoSurface
 from practice.score_steps import (
@@ -477,6 +484,15 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError):
                 pass
         return path.name.replace("_parsed.json", "").replace(".json", "")
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        layout = native_title_bar_layout(self, self.sidebar_toggle.size())
+        if layout is not None:
+            height, toggle_position = layout
+            self.title_bar.setFixedHeight(height)
+            self.sidebar.set_top_inset(height)
+            self.sidebar_toggle.move(toggle_position)
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
