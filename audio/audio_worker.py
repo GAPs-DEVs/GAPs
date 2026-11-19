@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from contextlib import contextmanager
 from queue import Empty, Full, Queue
 from threading import Lock
 from time import perf_counter
@@ -9,6 +11,163 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from audio.music_math import cents_difference, is_within_tolerance
 from audio.pitch_detection import estimate_pitch
+
+
+_WASAPI = "Windows WASAPI"
+_INVALID_SAMPLE_RATE = -9997  # PortAudio: paInvalidSampleRate
+_UNSUPPORTED_FORMAT = -2004287480  # WASAPI: AUDCLNT_E_UNSUPPORTED_FORMAT (0x88890008)
+
+@contextmanager
+def _audio_thread_com():
+    if sys.platform != "win32":
+        yield
+        return
+
+    import ctypes as ct
+
+    # WASAPI는 오디오 작업 스레드에서 스트림이 닫힐 때까지 COM 초기화가 유지되어야 한다.
+    # HRESULT를 직접 확인해 이미 다른 COM 모드인 스레드의 초기화 횟수를 변경하지 않는다.
+    com = ct.WinDLL("ole32")
+    com.CoInitializeEx.argtypes = (ct.c_void_p, ct.c_uint32)
+    com.CoInitializeEx.restype = ct.c_int32
+    com.CoUninitialize.restype = None
+    initialized = com.CoInitializeEx(None, 0)
+    try:
+        yield
+    finally:
+        if initialized >= 0:
+            com.CoUninitialize()
+
+
+def _windows_enhancements_enabled(sd, device_index: int) -> bool | None:
+    import ctypes as ct
+    from uuid import UUID
+
+    class PropertyKey(ct.Structure):
+        _fields_ = [("format_id", ct.c_ubyte * 16), ("property_id", ct.c_uint32)]
+
+    class PropertyData(ct.Union):
+        # PROPVARIANT의 공용체는 두 포인터를 담을 수 있는 크기와 정렬이 필요하다.
+        _fields_ = [("uint", ct.c_uint32), ("storage", ct.c_void_p * 2)]
+
+    class PropVariant(ct.Structure):
+        _fields_ = [("type", ct.c_ushort), ("reserved", ct.c_ushort * 3), ("data", PropertyData)]
+
+    def com_method(interface, slot, restype, *argtypes):
+        vtable = ct.cast(interface, ct.POINTER(ct.POINTER(ct.c_void_p))).contents
+        return ct.WINFUNCTYPE(restype, ct.c_void_p, *argtypes)(vtable[slot])
+
+    try:
+        # PortAudio에서 같은 장치 번호의 IMMDevice를 빌린다. 이름 비교로 다른 장치를 고르는 일을 피한다.
+        library = ct.CDLL(sd._libname)
+        get_endpoint = library.PaWasapi_GetIMMDevice
+    except (AttributeError, OSError):
+        return None
+    get_endpoint.argtypes = (ct.c_int, ct.POINTER(ct.c_void_p))
+    get_endpoint.restype = ct.c_int
+
+    com = ct.WinDLL("ole32")
+    com.PropVariantClear.argtypes = (ct.POINTER(PropVariant),)
+
+    endpoint, store = ct.c_void_p(), ct.c_void_p()
+    value = PropVariant()
+    try:
+        if get_endpoint(device_index, ct.byref(endpoint)) != 0 or not endpoint:
+            return None
+        # IMMDevice::OpenPropertyStore(STGM_READ) / IPropertyStore::GetValue의 COM 슬롯.
+        open_store = com_method(endpoint, 4, ct.c_int32, ct.c_uint32, ct.POINTER(ct.c_void_p))
+        if open_store(endpoint, 0, ct.byref(store)) < 0 or not store:
+            return None
+        key = PropertyKey((ct.c_ubyte * 16).from_buffer_copy(UUID("1da5d803-d492-4edd-8c23-e0c0ffee7f0e").bytes_le), 5)
+        get_value = com_method(store, 5, ct.c_int32, ct.POINTER(PropertyKey), ct.POINTER(PropVariant))
+        if get_value(store, ct.byref(key), ct.byref(value)) >= 0 and value.type == 19:  # VT_UI4
+            return {0: True, 1: False}.get(value.data.uint)
+        return None
+    finally:
+        com.PropVariantClear(ct.byref(value))
+        if store:
+            com_method(store, 2, ct.c_uint32)(store)  # IUnknown::Release. IMMDevice는 PortAudio 소유.
+
+
+def _wasapi_raw_settings(sd):
+    try:
+        settings = sd.WasapiSettings()
+        # sounddevice 공개 API에는 RAW가 없으므로 내부 접근을 이곳에 한정한다.
+        settings._streaminfo.streamOption = 1  # PortAudio: eStreamOptionRaw
+    except AttributeError:
+        return None
+    return settings
+
+
+def _start_input_stream(sd, device, preferred_rate, block_size, callback, extra_settings):
+    options = dict(device=device, blocksize=block_size, channels=1, dtype="float32", callback=callback)
+    if extra_settings is not None:
+        options["extra_settings"] = extra_settings
+
+    def start(rate):
+        stream = sd.InputStream(samplerate=rate, **options)
+        try:
+            stream.start()
+        except sd.PortAudioError:
+            stream.close()
+            raise
+        return stream
+
+    try:
+        return start(preferred_rate)
+    except sd.PortAudioError as error:
+        # WASAPI는 스트림 생성 시점이나 실제 시작 시점에 형식 오류를 반환할 수 있다.
+        host_error = error.args[2] if len(error.args) > 2 else ()
+        invalid_rate = error.args[1:2] == (_INVALID_SAMPLE_RATE,)
+        unsupported_format = isinstance(host_error, tuple) and host_error[1:2] == (_UNSUPPORTED_FORMAT,)
+        if sys.platform != "win32" or not (invalid_rate or unsupported_format):
+            raise
+        device_rate = sd.query_devices(device, "input")["default_samplerate"]
+        if device_rate == preferred_rate:
+            raise
+        return start(device_rate)
+
+
+def _open_windows_device(sd, device, sample_rate, block_size, callback):
+    info = sd.query_devices(device, "input")
+    host_api = sd.query_hostapis(info["hostapi"])["name"]
+    if host_api == _WASAPI and _windows_enhancements_enabled(sd, info["index"]) is not False:
+        raw = _wasapi_raw_settings(sd)
+        if raw is not None:
+            try:
+                return _start_input_stream(sd, device, sample_rate, block_size, callback, raw)
+            except sd.PortAudioError:
+                # RAW 스트림을 열지 못해도 같은 마이크로 일반 입력을 시도한다.
+                pass
+    return _start_input_stream(sd, device, sample_rate, block_size, callback, None)
+
+
+def _select_input_stream(sd, device, sample_rate, block_size, callback):
+    if sys.platform != "win32":
+        return _start_input_stream(sd, device, sample_rate, block_size, callback, None)
+    if device is None:
+        # PortAudio의 전체 기본 장치는 MME일 수 있다. Windows WASAPI 기본 입력을 먼저 시도한다.
+        wasapi_default = next((api["default_input_device"] for api in sd.query_hostapis() if api["name"] == _WASAPI), -1)
+        if wasapi_default >= 0 and wasapi_default != sd.default.device[0]:
+            try:
+                return _open_windows_device(sd, wasapi_default, sample_rate, block_size, callback)
+            except sd.PortAudioError:
+                pass
+    return _open_windows_device(sd, device, sample_rate, block_size, callback)
+
+
+@contextmanager
+def open_input_stream(sd, device, sample_rate, block_size, callback):
+    """오디오 작업 스레드에서 입력을 열고 같은 스레드에서 스트림과 COM을 정리한다."""
+    with _audio_thread_com():
+        stream = _select_input_stream(sd, device, sample_rate, block_size, callback)
+        try:
+            yield stream
+        finally:
+            try:
+                stream.stop()
+            finally:
+                stream.close()
 
 
 class AudioWorker(QThread):
@@ -111,14 +270,8 @@ class AudioWorker(QThread):
         last_voiced_at = 0.0
 
         try:
-            with sd.InputStream(
-                samplerate=self.sample_rate,
-                blocksize=self.block_size,
-                channels=1,
-                dtype="float32",
-                device=self.device,
-                callback=audio_callback,
-            ):
+            with open_input_stream(sd, self.device, self.sample_rate, self.block_size, audio_callback) as stream:
+                sample_rate = int(stream.samplerate)
                 next_emit_at = 0.0
                 while self._running and not self.isInterruptionRequested():
                     if self._apply_pending_target():
@@ -137,7 +290,7 @@ class AudioWorker(QThread):
 
                     detection = estimate_pitch(
                         block,
-                        sample_rate=self.sample_rate,
+                        sample_rate=sample_rate,
                         min_freq=self.min_freq,
                         max_freq=self.max_freq,
                         silence_threshold=self.silence_threshold,
