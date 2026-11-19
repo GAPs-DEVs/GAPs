@@ -57,6 +57,9 @@ def paint_icon(painter: QPainter, name: str, rect: QRectF, color) -> None:
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawLine(QPointF(7.6, 11.4), QPointF(7.6, 3.2))
         painter.drawLine(QPointF(7.6, 3.2), QPointF(12, 4.6))
+    elif name == "close":
+        painter.drawLine(QPointF(4.5, 4.5), QPointF(11.5, 11.5))
+        painter.drawLine(QPointF(11.5, 4.5), QPointF(4.5, 11.5))
 
     painter.restore()
 
@@ -69,15 +72,56 @@ def _font(widget: QWidget, pixel_size: int, weight: QFont.Weight) -> QFont:
 
 
 class SidebarItem(QAbstractButton):
-    def __init__(self, text: str, icon: str | None = None, parent: QWidget | None = None) -> None:
+    remove_requested = Signal()
+
+    def __init__(self, text: str, icon: str | None = None, parent: QWidget | None = None,
+                 removable: bool = False) -> None:
         super().__init__(parent)
         self.setText(text)
         self.icon_name = icon
         self.subtitle = ""
         self.badge = ""
+        self.removable = removable
+        self._remove_hovered = False
+        self._remove_pressed = False
         self.setFixedHeight(32)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setMouseTracking(removable)
+
+    def remove_rect(self) -> QRectF:
+        return QRectF(self.width() - 28, (self.height() - 20) / 2, 20, 20)
+
+    def _over_remove(self, event: QMouseEvent) -> bool:
+        return self.removable and self.remove_rect().contains(event.position())
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        hovered = self._over_remove(event)
+        if hovered != self._remove_hovered:
+            self._remove_hovered = hovered
+            self.setToolTip("최근 목록에서 제거" if hovered else self.text())
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._remove_hovered = False
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._over_remove(event):
+            self._remove_pressed = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._remove_pressed:
+            self._remove_pressed = False
+            if self._over_remove(event):
+                self.remove_requested.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def nextCheckState(self) -> None:
         pass
@@ -126,6 +170,15 @@ class SidebarItem(QAbstractButton):
             text_left = 34.0
 
         right = rect.width() - 10
+        if self.removable and self.isEnabled() and self.underMouse():
+            remove = self.remove_rect()
+            if self._remove_hovered:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(themed_color("#ced4da"))
+                painter.drawRoundedRect(remove, 5, 5)
+            close_color = themed_color("#374151" if self._remove_hovered else "#6b7280", text=True)
+            paint_icon(painter, "close", remove.adjusted(3, 3, -3, -3), close_color)
+            right = remove.left() - 6
         if self.badge:
             badge_font = _font(self, 10, QFont.Weight.DemiBold)
             badge_width = QFontMetrics(badge_font).horizontalAdvance(self.badge) + 12
@@ -236,6 +289,7 @@ class Sidebar(QFrame):
     new_score_requested = Signal()
     search_requested = Signal()
     recent_selected = Signal(str)
+    recent_removed = Signal(str)
     logout_requested = Signal()
     open_changed = Signal(bool)
 
@@ -365,9 +419,10 @@ class Sidebar(QFrame):
             if widget is not None:
                 widget.deleteLater()
         for title, path in scores:
-            item = SidebarItem(title, "note")
+            item = SidebarItem(title, "note", removable=True)
             item.setToolTip(title)
             item.clicked.connect(lambda _checked=False, score_path=path: self.recent_selected.emit(score_path))
+            item.remove_requested.connect(lambda score_path=path: self.recent_removed.emit(score_path))
             self.recent_layout.addWidget(item)
         self.recent_label.setVisible(bool(scores))
 
