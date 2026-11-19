@@ -2,8 +2,9 @@
 import os
 from pathlib import Path
 import shlex
+import socket
+import struct
 import sys
-from wsgiref.simple_server import WSGIServer
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -19,6 +20,8 @@ def _env_path():
 
 
 _ENV_PATH = _env_path()
+REDIRECT_PORT = 8080
+AUTH_TIMEOUT_SECONDS = 180
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -30,7 +33,7 @@ class GoogleAuthConfigurationError(ValueError):
     """A local OAuth setting is missing or malformed."""
 
 
-def _load_client_config():
+def load_client_config():
     names = ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
     values = {}
     try:
@@ -67,24 +70,29 @@ def _load_client_config():
     }
 
 
-class ReusableWSGIServer(WSGIServer):
-    allow_reuse_address = True
-
-
-def fetch_google_id_token():
+def fetch_google_id_token(config=None):
     """Return a fresh Google ID token, or None if browser authentication fails."""
-    config = _load_client_config()
+    config = config or load_client_config()
     try:
         flow = InstalledAppFlow.from_client_config(config, scopes=SCOPES)
         credentials = flow.run_local_server(
             host="localhost",
-            port=8080,
-            server_class=ReusableWSGIServer,
+            port=REDIRECT_PORT,
             prompt="select_account",
             success_message="인증이 완료되었습니다! 창을 닫고 프로그램으로 돌아가세요.",
+            timeout_seconds=AUTH_TIMEOUT_SECONDS,
         )
         return credentials.id_token
     except Exception as error:
         # Provider exception text can contain credential-bearing URLs.
         print(f"[구글 로그인 에러] {type(error).__name__}")
         return None
+
+
+def cancel_google_login():
+    try:
+        with socket.create_connection(("127.0.0.1", REDIRECT_PORT), timeout=1) as sock:
+            sock.sendall(b"GET /?error=access_denied HTTP/1.0\r\n\r\n")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    except OSError:
+        pass

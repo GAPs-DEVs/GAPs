@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -47,6 +47,10 @@ QLabel#dialog_title {
 QLabel#dialog_message {
     font-size: 13px;
     color: #4b5563;
+}
+QLabel#loading_message {
+    font-size: 12px;
+    color: #6b7280;
 }
 QLabel#dialog_detail {
     font-size: 12px;
@@ -186,6 +190,102 @@ class AppDialog(QDialog):
             self.setGeometry(self._host.rect())
             self.raise_()
         self._confirm.setFocus()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._host and event.type() == QEvent.Type.Resize:
+            self.setGeometry(self._host.rect())
+        return super().eventFilter(watched, event)
+
+    def done(self, result: int) -> None:
+        if self._host is not None:
+            self._host.removeEventFilter(self)
+        super().done(result)
+
+
+class Spinner(QWidget):
+    def __init__(self, size: int = 36, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._advance)
+
+    def _advance(self) -> None:
+        self._angle = (self._angle + 6) % 360
+        self.update()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        width = 3.5
+        rect = QRectF(width, width, self.width() - width * 2, self.height() - width * 2)
+        pen = QPen(QColor("#e5e7eb"), width)
+        painter.setPen(pen)
+        painter.drawEllipse(rect)
+        pen.setColor(QColor("#111827"))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(rect, -self._angle * 16, 100 * 16)
+
+
+class LoadingOverlay(QDialog):
+    def __init__(self, parent: QWidget | None, message: str, cancel_text: str = "취소") -> None:
+        self._host = parent.window() if parent is not None else None
+        super().__init__(self._host)
+        if self._host is not None:
+            self.setWindowFlags(Qt.WindowType.Widget)
+            self._host.installEventFilter(self)
+        self.setObjectName("app_dialog")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setModal(True)
+        self.setStyleSheet(_STYLE)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        card = QFrame()
+        card.setObjectName("dialog_card")
+        card.setFixedWidth(220)
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(32)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(15, 23, 42, 60))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(CARD_MARGIN, 28, CARD_MARGIN, 20)
+        layout.setSpacing(0)
+        layout.addWidget(Spinner(), 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(14)
+        label = QLabel(message)
+        label.setObjectName("loading_message")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+        layout.addSpacing(20)
+        cancel = QPushButton(cancel_text)
+        cancel.setObjectName("dialog_secondary")
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        layout.addWidget(cancel, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._cancel = cancel
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._host is not None:
+            self.setGeometry(self._host.rect())
+            self.raise_()
+        self._cancel.setFocus()
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self._host and event.type() == QEvent.Type.Resize:
