@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
         camera_calibration: CameraCalibration | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("Guitar Practice")
+        self.setWindowTitle("GAPs")
         self.resize(1440, 900)
         apply_native_title_bar(self)
 
@@ -369,7 +369,7 @@ class MainWindow(QMainWindow):
 
     def _handle_page_changed(self, index: int) -> None:
         page_title = self.PAGE_TITLES[index] if 0 <= index < len(self.PAGE_TITLES) else ""
-        self.setWindowTitle(f"Guitar Practice — {page_title}" if page_title else "Guitar Practice")
+        self.setWindowTitle(f"GAPs — {page_title}" if page_title else "GAPs")
 
         on_login = index == 0
         self.sidebar_toggle.setVisible(not on_login and not self.isFullScreen())
