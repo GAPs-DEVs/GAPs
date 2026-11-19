@@ -353,8 +353,7 @@ class Sidebar(QFrame):
             item.clicked.connect(lambda _checked=False, nav_key=key: self._handle_nav(nav_key))
             self.nav_buttons[key] = item
             layout.addWidget(item)
-        self.nav_buttons["history"].setEnabled(False)
-        self.nav_buttons["history"].set_badge("준비 중")
+        self.nav_buttons["history"].setCheckable(False)
 
         layout.addSpacing(18)
         self.recent_label = QLabel("최근 연습")

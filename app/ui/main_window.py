@@ -7,11 +7,11 @@ import uuid
 import time
 
 
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QImage, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QFrame, QScrollArea, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
 
-from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH
+from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH, PRACTICE_REPORT_URL
 from app.features.audio_devices import enumerate_audio_input_devices
 from app.features.practice_audio import PracticeAudioController, RetriggerGate, with_step_context
 from app.features.video import PracticeFrameStats, PracticeVideoWorker
@@ -414,6 +414,8 @@ class MainWindow(QMainWindow):
                 self.stacked_widget.setCurrentIndex(3)
             else:
                 self.switch_to_admin(str(self.score_path))
+        elif key == "history":
+            QDesktopServices.openUrl(QUrl(PRACTICE_REPORT_URL))
 
     def _handle_sidebar_new_score(self) -> None:
         self._leave_practice()
