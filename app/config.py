@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-APP_NAME = "GuitarPracticeSupport"
+APP_NAME = "GAPs"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 

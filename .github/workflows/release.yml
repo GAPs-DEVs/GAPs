@@ -65,17 +65,17 @@ jobs:
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          codesign --verify --deep --strict dist/GuitarPracticeSupport.app
-          ditto -c -k --keepParent dist/GuitarPracticeSupport.app "GuitarPracticeSupport-${APP_VERSION}-${{ matrix.name }}.zip"
+          codesign --verify --deep --strict dist/GAPs.app
+          ditto -c -k --keepParent dist/GAPs.app "GAPs-${APP_VERSION}-${{ matrix.name }}.zip"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        run: 7z a -tzip "GuitarPracticeSupport-${APP_VERSION}-${{ matrix.name }}.zip" ./dist/GuitarPracticeSupport
+        run: 7z a -tzip "GAPs-${APP_VERSION}-${{ matrix.name }}.zip" ./dist/GAPs
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: GuitarPracticeSupport-*.zip
+          path: GAPs-*.zip
           if-no-files-found: error
           retention-days: 7
 
