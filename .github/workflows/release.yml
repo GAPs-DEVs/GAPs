@@ -66,7 +66,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           codesign --verify --deep --strict dist/GAPs.app
-          ditto -c -k --keepParent dist/GAPs.app "GAPs-${APP_VERSION}-${{ matrix.name }}.zip"
+          uvx dmgbuild@2.0.0 -s assets/dmg-settings.py -D app=dist/GAPs.app GAPs "GAPs-${APP_VERSION}-${{ matrix.name }}.dmg"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -75,7 +75,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: GAPs-*.zip
+          path: |
+            GAPs-*.zip
+            GAPs-*.dmg
           if-no-files-found: error
           retention-days: 7
 
@@ -97,7 +99,9 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: release/*.zip
+          files: |
+            release/*.zip
+            release/*.dmg
           body_path: .github/release-template.md
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}

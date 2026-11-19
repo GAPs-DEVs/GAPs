@@ -2,7 +2,7 @@
 
 | 운영체제 | 파일 |
 |---|---|
-| macOS (Apple Silicon, M1 이상) | `GAPs-<버전>-macos-arm64.zip` |
+| macOS (Apple Silicon, M1 이상) | `GAPs-<버전>-macos-arm64.dmg` |
 | Windows 10/11 (64비트) | `GAPs-<버전>-windows-x64.zip` |
 
 > Intel Mac은 지원하지 않습니다.
@@ -10,7 +10,8 @@
 ## 설치 및 실행
 
 ### macOS
-1. zip 파일을 풀고 `GAPs.app`을 **응용 프로그램** 폴더로 옮깁니다.
+1. dmg 파일을 열고, 창 안의 `GAPs`를 **Applications(응용 프로그램)** 폴더로 끌어다 놓습니다.
+   - 복사가 끝나면 Finder 사이드바에서 `GAPs` 디스크를 꺼내도 됩니다.
 2. 처음 실행할 때 "손상되었기 때문에 열 수 없습니다" 또는 "확인되지 않은 개발자" 경고가 뜨면, 터미널에서 아래 명령을 실행한 뒤 다시 엽니다.
    ```bash
    xattr -cr /Applications/GAPs.app
