@@ -1,20 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
 # 번들링할 데이터/리소스 폴더 매핑: (실제 경로, 번들 내부 대상 폴더명)
+APP_VERSION = os.environ.get('APP_VERSION', '1.0.0')
+
 added_datas = [
     ('examples', 'examples'),
-    # YOLO 가중치나 모델 파일이 저장된 폴더가 있다면 추가 (예: ('models', 'models'))
+    ('models', 'models'),
 ]
 
-# ultralytics나 PySide6 관련 필수 메타데이터 수집
-try:
-    added_datas += collect_data_files('ultralytics')
-except Exception:
-    pass
+if os.path.exists('.env'):
+    added_datas.append(('.env', '.'))
+
+for package in ('ultralytics', 'mediapipe', 'librosa'):
+    added_datas += collect_data_files(package)
 
 a = Analysis(
     ['app/main.py'],
@@ -50,13 +53,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,  # GUI 전용(터미널 창 숨김) / 디버깅 시에는 True로 두고 확인 가능
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/icon.ico',
 )
 
 coll = COLLECT(
@@ -65,20 +69,24 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='GuitarPracticeSupport',
 )
 
 # macOS 애플리케이션 번들 (.app) 생성
-app = BUNDLE(
-    exe,
-    name='GuitarPracticeSupport.app',
-    icon=None,
-    bundle_identifier='com.capstone.guitarpractice',
-    info_plist={
-        'NSCameraUsageDescription': '기타 연주 감지 및 피드백을 위해 카메라 권한이 필요합니다.',
-        # 필요하다면 마이크 권한도 추가 가능
-        # 'NSMicrophoneUsageDescription': '기타 소리 분석을 위해 마이크 권한이 필요합니다.'
-    }
-)
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='GuitarPracticeSupport.app',
+        icon='assets/icon.icns',
+        bundle_identifier='com.capstone.guitarpractice',
+        version=APP_VERSION,
+        info_plist={
+            'CFBundleShortVersionString': APP_VERSION,
+            'CFBundleVersion': APP_VERSION,
+            'NSHighResolutionCapable': True,
+            'NSCameraUsageDescription': '기타 연주 감지 및 피드백을 위해 카메라 권한이 필요합니다.',
+            'NSMicrophoneUsageDescription': '기타 소리 분석을 위해 마이크 권한이 필요합니다.',
+        }
+    )

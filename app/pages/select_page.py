@@ -20,6 +20,7 @@ from PySide6.QtCore import QEvent, Qt, QThread, Signal
 import guitarpro
 
 from app.api_client import api_client
+from app.config import USER_DATA_DIR
 from app.features.score_library import RemoveScoreThread
 from app.ui.dialogs import ask_confirm, show_message
 
@@ -287,14 +288,7 @@ class SelectPage(QWidget):
         self.main_window = main_window
         self.remove_thread = None
 
-        # 프로젝트 루트 기준 data/cached_scores 전용 캐시 폴더 설정
-        current_dir = os.path.dirname(os.path.abspath(__file__))  # app/pages/
-        app_dir = os.path.dirname(current_dir)  # app/
-        project_root = os.path.dirname(app_dir)  # 프로젝트 루트
-
-        self.db_mock_dir = os.path.join(
-            project_root, "data", "cached_scores"
-        )
+        self.db_mock_dir = str(USER_DATA_DIR / "cached_scores")
         os.makedirs(self.db_mock_dir, exist_ok=True)
 
         self.init_ui()

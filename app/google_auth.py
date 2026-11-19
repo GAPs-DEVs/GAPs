@@ -8,9 +8,17 @@ from wsgiref.simple_server import WSGIServer
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 
-# A packaged app reads an external .env beside its executable.
-_ENV_PATH = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
-             else Path(__file__).resolve().parents[1]) / ".env"
+# A packaged app prefers an external .env beside its executable, then the bundled one.
+def _env_path():
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).resolve().parents[1] / ".env"
+    external = Path(sys.executable).resolve().parent / ".env"
+    if external.exists():
+        return external
+    return Path(getattr(sys, "_MEIPASS", external.parent)) / ".env"
+
+
+_ENV_PATH = _env_path()
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
