@@ -7,13 +7,34 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
 from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QResizeEvent
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtTest import QTest
 
 from app.ui.main_window import MainWindow
 from app.ui.tracking_panel import HelpButton, TrackingPanel
 from vision.fretboard_mapping import DetectedLine
+
+
+def test_native_frame_can_dispatch_resize_during_window_construction():
+    application = QApplication.instance() or QApplication([])
+
+    def resize_during_frame_install(widget):
+        # Windows에서 winId()가 네이티브 창을 만들 때 resizeEvent가 동기적으로 들어올 수 있다.
+        widget.resizeEvent(QResizeEvent(widget.size(), widget.size()))
+
+    with (
+        patch('app.ui.main_window.enumerate_camera_indices', return_value=[]),
+        patch('app.ui.main_window.enumerate_audio_input_devices', return_value=[]),
+        patch('app.ui.main_window.apply_native_title_bar', side_effect=resize_during_frame_install) as install_frame,
+    ):
+        widget = MainWindow(model_path=Path('models/best06.pt'))
+    try:
+        install_frame.assert_called_once_with(widget)
+        assert widget.reference_fret_spin.isEnabled()
+    finally:
+        widget.close()
+        application.processEvents()
 
 
 @pytest.fixture
