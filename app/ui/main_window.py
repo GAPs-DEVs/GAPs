@@ -7,8 +7,8 @@ import uuid
 import time
 
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QImage
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QFrame, QScrollArea, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
 
 from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH
@@ -18,7 +18,9 @@ from app.features.video import PracticeFrameStats, PracticeVideoWorker
 from app.ui.camera_panel import CameraPanel
 from app.ui.practice_panel import PracticePanel
 from app.ui.tab_sheet_view import PracticeTabStrip
-from app.ui.tracking_panel import TrackingPanel
+from app.ui.sidebar import Sidebar
+from app.ui.title_bar import TITLE_BAR_HEIGHT, TRAFFIC_LIGHTS_WIDTH, SidebarToggleButton, TitleBar, apply_native_title_bar
+from app.ui.tracking_panel import DEFAULT_STRING_MARGIN_PERCENT, TrackingPanel
 from app.ui.video_surface import VideoSurface
 from practice.score_steps import (
     PracticeStep,
@@ -52,6 +54,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Guitar Practice")
         self.resize(1440, 900)
+        apply_native_title_bar(self)
 
         self.model_path = model_path
         self.score_path = score_path
@@ -102,8 +105,6 @@ class MainWindow(QMainWindow):
         self.stop_video_button = self.camera_panel.stop_button
         self.start_video_button.clicked.connect(self.start_video)
         self.stop_video_button.clicked.connect(self.stop_video)
-        self.reverse_checkbox = self.camera_panel.reverse_checkbox
-        self.reverse_checkbox.stateChanged.connect(self.handle_reverse_change)
         self.video_status_label = self.camera_panel.status_label
         self.marker_status_label = self.camera_panel.marker_status_label
 
@@ -115,6 +116,10 @@ class MainWindow(QMainWindow):
         self.select_lines_button.clicked.connect(self.begin_line_selection)
         self.clear_tracking_button.clicked.connect(self.clear_manual_tracking)
         self.tracking_panel.manual_points_checkbox.toggled.connect(self.handle_manual_selection_change)
+        self.tracking_panel.set_string_margin_percent(
+            QSettings("GAPs", "GuitarPractice").value("string_margin_percent", DEFAULT_STRING_MARGIN_PERCENT, type=int)
+        )
+        self.tracking_panel.string_margin_slider.valueChanged.connect(self.handle_string_margin_change)
 
         self.practice_panel = PracticePanel()
         self.microphone_combo = self.practice_panel.microphone_combo
@@ -160,7 +165,6 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setStyleSheet("""
             QWidget {
-                font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
                 background-color: #f8f9fa;
                 color: #212529;
             }
@@ -286,7 +290,46 @@ class MainWindow(QMainWindow):
 
         # ── [4단 라우팅 스택 조립] ──
         self.stacked_widget = QStackedWidget(self)
-        self.setCentralWidget(self.stacked_widget)
+
+        self._settings = QSettings("GAPs", "GuitarPractice")
+        self._current_user: dict | None = None
+        self._practice_score_loaded = False
+        self._sidebar_preferred_open = self._settings.value("sidebar_open", True, type=bool)
+
+        window_body = QWidget()
+        body_layout = QHBoxLayout(window_body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+
+        self.sidebar = Sidebar(top_inset=TITLE_BAR_HEIGHT)
+        self.sidebar.navigate.connect(self._handle_sidebar_navigate)
+        self.sidebar.new_score_requested.connect(self._handle_sidebar_new_score)
+        self.sidebar.search_requested.connect(self._handle_sidebar_search)
+        self.sidebar.recent_selected.connect(self._handle_sidebar_recent)
+        self.sidebar.logout_requested.connect(self._handle_sidebar_logout)
+        self.sidebar.open_changed.connect(self._handle_sidebar_open_changed)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        self.title_bar = TitleBar()
+        content_layout.addWidget(self.title_bar)
+        content_layout.addWidget(self.stacked_widget, stretch=1)
+
+        body_layout.addWidget(self.sidebar)
+        body_layout.addWidget(content, stretch=1)
+        self.setCentralWidget(window_body)
+
+        self.sidebar_toggle = SidebarToggleButton(window_body)
+        self.sidebar_toggle.move(TRAFFIC_LIGHTS_WIDTH, (TITLE_BAR_HEIGHT - self.sidebar_toggle.height()) // 2)
+        self.sidebar_toggle.clicked.connect(self._handle_sidebar_toggle)
+        self.sidebar_toggle.raise_()
+
+        sidebar_shortcut = QShortcut(QKeySequence("Ctrl+Meta+S"), self)
+        sidebar_shortcut.activated.connect(self._handle_sidebar_toggle)
+
+        self.stacked_widget.currentChanged.connect(self._handle_page_changed)
 
         # 2. 인스턴스 생성 (이 4줄이 먼저 와야 합니다)
         self.login_page = LoginPage(main_window=self)     # Index 0
@@ -299,7 +342,8 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.select_page)
         self.stacked_widget.addWidget(self.practice_root)
         self.stacked_widget.addWidget(self.admin_page)
-        
+        self.login_page.login_success.connect(self._handle_login_success)
+
         # ── [진단용 디버그 출력] ──
         print("\n================== [현재 스택 위젯 배치 순서] ==================")
         for i in range(self.stacked_widget.count()):
@@ -314,9 +358,131 @@ class MainWindow(QMainWindow):
         self.refresh_auto_speed_controls()
         self.refresh_practice_display()
         self.refresh_marker_status()
+        self._handle_page_changed(self.stacked_widget.currentIndex())
 
     # 클래스 내부에 화면 전환 라우터 메서드 추가/보강
     # ── [화면 라우팅 컨트롤러] ──
+
+    PAGE_TITLES = ("로그인", "악보 보관함", "연습", "악보 편집")
+    PAGE_NAV_KEYS = (None, "library", "practice", "editor")
+    RECENT_SCORE_LIMIT = 5
+
+    def _handle_page_changed(self, index: int) -> None:
+        page_title = self.PAGE_TITLES[index] if 0 <= index < len(self.PAGE_TITLES) else ""
+        self.setWindowTitle(f"Guitar Practice — {page_title}" if page_title else "Guitar Practice")
+
+        on_login = index == 0
+        self.sidebar_toggle.setVisible(not on_login and not self.isFullScreen())
+        if on_login:
+            self.sidebar.set_open(False, animated=False)
+            return
+
+        self.sidebar.set_current(self.PAGE_NAV_KEYS[index] if 0 <= index < len(self.PAGE_NAV_KEYS) else None)
+        self._refresh_sidebar_user()
+        self._refresh_sidebar_recent()
+        self.sidebar.set_open(False if index == 2 else self._sidebar_preferred_open)
+
+    def _handle_sidebar_toggle(self) -> None:
+        if self.stacked_widget.currentIndex() == 0:
+            return
+        self.sidebar.toggle()
+        if self.stacked_widget.currentIndex() != 2:
+            self._sidebar_preferred_open = self.sidebar.is_open()
+            self._settings.setValue("sidebar_open", self._sidebar_preferred_open)
+
+    def _handle_sidebar_open_changed(self, open_: bool) -> None:
+        self.sidebar_toggle.set_open(open_)
+
+    def _leave_practice(self) -> None:
+        if self.stacked_widget.currentIndex() != 2:
+            return
+        self.stop_practice()
+        self.stop_video()
+
+    def _handle_sidebar_navigate(self, key: str) -> None:
+        if key == "library":
+            self._leave_practice()
+            self.switch_to_select()
+        elif key == "practice" and self._practice_score_loaded:
+            self.stacked_widget.setCurrentIndex(2)
+        elif key == "editor":
+            self._leave_practice()
+            if self.admin_page.current_file_path:
+                self.stacked_widget.setCurrentIndex(3)
+            else:
+                self.switch_to_admin(str(self.score_path))
+
+    def _handle_sidebar_new_score(self) -> None:
+        self._leave_practice()
+        self.switch_to_select()
+        self.select_page.start_async_parsing("GP")
+
+    def _handle_sidebar_search(self) -> None:
+        self._leave_practice()
+        self.switch_to_select()
+        self.select_page.search_input.setFocus()
+        self.select_page.search_input.selectAll()
+
+    def _handle_sidebar_recent(self, path: str) -> None:
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "파일 없음", "악보 파일을 찾을 수 없어 최근 목록에서 제거합니다.")
+            self._settings.setValue("recent_scores", [p for p in self._recent_score_paths() if p != path])
+            self._refresh_sidebar_recent()
+            return
+        self._leave_practice()
+        self.switch_to_practice(path)
+
+    def _handle_sidebar_logout(self) -> None:
+        self._leave_practice()
+        self._current_user = None
+        self._practice_score_loaded = False
+        self.sidebar.set_practice_title(None)
+        self.select_page.go_to_login()
+
+    def _handle_login_success(self, user: dict) -> None:
+        self._current_user = user
+
+    def _refresh_sidebar_user(self) -> None:
+        if api_client.access_token and api_client.user_info:
+            info = api_client.user_info
+            self.sidebar.set_user(info.get("username") or info.get("email") or "사용자", info.get("email") or "Google 계정")
+        elif self._current_user and self._current_user.get("email") != "guest@local":
+            self.sidebar.set_user(self._current_user.get("username", "사용자"), self._current_user.get("email", ""))
+        else:
+            self.sidebar.set_user("게스트", "로그인하지 않음")
+
+    def _recent_score_paths(self) -> list[str]:
+        value = self._settings.value("recent_scores", [])
+        if isinstance(value, str):
+            return [value]
+        return [str(path) for path in (value or [])]
+
+    def _remember_recent_score(self, path: Path) -> None:
+        resolved = str(path.resolve())
+        paths = [resolved] + [p for p in self._recent_score_paths() if p != resolved]
+        self._settings.setValue("recent_scores", paths[: self.RECENT_SCORE_LIMIT])
+
+    def _refresh_sidebar_recent(self) -> None:
+        scores = [(self._score_title(Path(p)), p) for p in self._recent_score_paths() if os.path.exists(p)]
+        self.sidebar.set_recent(scores)
+
+    @staticmethod
+    def _score_title(path: Path) -> str:
+        metadata_path = path.with_name(path.name.replace("_parsed.json", ".meta.json"))
+        if metadata_path != path and metadata_path.exists():
+            try:
+                with metadata_path.open(encoding="utf-8") as metadata_file:
+                    data = json.load(metadata_file)
+                if isinstance(data, dict) and data.get("title"):
+                    return str(data["title"])
+            except (OSError, ValueError):
+                pass
+        return path.name.replace("_parsed.json", "").replace(".json", "")
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "sidebar_toggle"):
+            self.sidebar_toggle.setVisible(self.stacked_widget.currentIndex() != 0 and not self.isFullScreen())
 
     def switch_to_select(self):
         """악보 선택 허브(Index 1)로 복귀"""
@@ -328,7 +494,6 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(1)
 
     def switch_to_practice(self, json_path: str):
-        print(f"🔥🔥 [DEBUG] switch_to_practice 실제로 호출됨! 이동할 목표 Index: 2, 현재 파일: {__file__}")
         """선택한 악보 JSON을 로드하고 연습 화면(Index 2)으로 전환"""
         print(f"[switch_to_practice 진입] 경로: {json_path}")
         self.score_path = Path(json_path)
@@ -343,11 +508,15 @@ class MainWindow(QMainWindow):
         self.retrigger_gate.configure(None, self.current_step())
         self.refresh_practice_display()
 
+        self._practice_score_loaded = True
+        self.sidebar.set_practice_title(self._score_title(self.score_path))
+        self._remember_recent_score(self.score_path)
+
         # 💡 팀원 연습 화면은 Index 2 입니다!
         self.stacked_widget.setCurrentIndex(2)
+        self._refresh_sidebar_recent()
 
     def switch_to_admin(self, json_path: str = None):
-        print(f"🔥🔥 [DEBUG] switch_to_admin 실제로 호출됨! 이동할 목표 Index: 3, 현재 파일: {__file__}")
         """악보 정밀 에디터(Index 3)로 전환"""
         print(f"[switch_to_admin 진입] 경로: {json_path}")
         if json_path and os.path.exists(json_path):
@@ -472,33 +641,6 @@ class MainWindow(QMainWindow):
                 QPushButton:disabled { background-color: #f8f9fa; border-color: #e5e7eb; color: #adb5bd; }
             """)
 
-        layout.addSpacing(6)
-
-        # 홈 복귀 버튼 (정돈된 솔리드 다크 톤)
-        btn_home = QPushButton("악보 선택으로 복귀")
-        btn_home.setCursor(Qt.PointingHandCursor)
-        btn_home.setFixedHeight(44)
-        btn_home.setStyleSheet("""
-            QPushButton {
-                background-color: #111827;
-                color: #ffffff;
-                font-size: 13.5px;
-                font-weight: 700;
-                border: 1px solid #111827;
-                border-radius: 8px;
-                padding: 10px;
-            }
-            QPushButton:hover {
-                background-color: #27272a;
-                border-color: #27272a;
-            }
-            QPushButton:pressed {
-                background-color: #09090b;
-            }
-        """)
-        btn_home.clicked.connect(lambda: (self.stop_practice(), self.stop_video(), self.switch_to_select()))
-        layout.addWidget(btn_home)
-
         layout.addStretch(1)
         scroll_area.setWidget(panel)
         return scroll_area
@@ -552,9 +694,10 @@ class MainWindow(QMainWindow):
         finally:
             self.microphone_combo.blockSignals(False)
 
-    def handle_reverse_change(self, _: int) -> None:
+    def handle_string_margin_change(self, percent: int) -> None:
+        QSettings("GAPs", "GuitarPractice").setValue("string_margin_percent", percent)
         if self.video_worker is not None:
-            self.video_worker.set_reverse_strings(self.reverse_checkbox.isChecked())
+            self.video_worker.set_string_margin_ratio(percent / 100.0)
 
     def handle_reference_fret_change(self, value: int) -> None:
         if self._updating_reference_fret_spin:
@@ -602,12 +745,13 @@ class MainWindow(QMainWindow):
             conf_threshold=DEFAULT_CONF_THRESHOLD,
             image_size=DEFAULT_IMAGE_SIZE,
             current_step=self.current_step(),
-            reverse_strings=self.reverse_checkbox.isChecked(),
+            reverse_strings=False,
             show_edge_guides=False,
             edge_supported_notes_only=False,
             camera_calibration=self.camera_calibration,
             parent=self,
         )
+        self.video_worker.set_string_margin_ratio(self.tracking_panel.string_margin_slider.value() / 100.0)
         self.video_worker.frame_ready.connect(self.update_frame)
         self.video_worker.error_message.connect(self.handle_video_error)
         self.video_worker.finished.connect(self.on_video_worker_finished)
@@ -942,7 +1086,6 @@ class MainWindow(QMainWindow):
         # 1. 다음 스텝으로 넘어가기 전, 현재 스텝을 정답(correct)으로 수집기에 기록
         if getattr(self, "recorder", None):
             cur_step = self.current_step()
-            print("🔥🔥 [DEBUG cur_step]", vars(cur_step) if hasattr(cur_step, "__dict__") else cur_step)
             
             # (1) cur_step 객체 자체 속성 탐색
             step_id = getattr(cur_step, "score_step_id", None)
@@ -991,7 +1134,7 @@ class MainWindow(QMainWindow):
         was_running = self.practice_running
         mode = self.current_mode()
         self._cancel_pending_interactive_advance()
-        if mode == "interactive":
+        if mode == "interactive" and not was_running:
             self._stop_audio_worker()
         elif mode == "auto":
             self.auto_flow_timer.stop()
@@ -1117,6 +1260,7 @@ class MainWindow(QMainWindow):
 
         # 2. 기존 워커 스레드 정지
         self.stop_practice()
+        self.audio_controller.shutdown()
         self.stop_video()
 
         super().closeEvent(event)

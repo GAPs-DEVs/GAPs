@@ -7,8 +7,67 @@ from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
+from app.ui.theme import themed_color
+
 
 DEFAULT_STEPS_PER_SCORE_LINE = 16
+
+
+def scrollbar_qss(track: str) -> str:
+    return f"""
+        QScrollBar:horizontal {{
+            background: {track};
+            height: 14px;
+            margin: 0px;
+            border: none;
+            border-left: 10px solid {track};
+            border-right: 10px solid {track};
+            border-bottom: 4px solid {track};
+        }}
+        QScrollBar:vertical {{
+            background: {track};
+            width: 14px;
+            margin: 0px;
+            border: none;
+            border-top: 10px solid {track};
+            border-bottom: 10px solid {track};
+            border-right: 4px solid {track};
+        }}
+        QScrollBar::handle:horizontal {{
+            background: #cbd5e1;
+            border-radius: 3px;
+            min-width: 40px;
+            margin: 2px 0px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: #cbd5e1;
+            border-radius: 3px;
+            min-height: 32px;
+            margin: 0px 2px;
+        }}
+        QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover {{
+            background: #94a3b8;
+        }}
+        QScrollBar::handle:horizontal:pressed, QScrollBar::handle:vertical:pressed {{
+            background: #6b7280;
+        }}
+        QScrollBar::add-line, QScrollBar::sub-line {{
+            width: 0px;
+            height: 0px;
+            border: none;
+            background: none;
+        }}
+        QScrollBar::add-page, QScrollBar::sub-page {{
+            background: none;
+        }}
+        QAbstractScrollArea::corner {{
+            background: transparent;
+            border: none;
+        }}
+    """
+
+
+TAB_SCROLLBAR_QSS = scrollbar_qss("#fbfbfc")
 
 
 def _note_int(note: Mapping[str, object], key: str, default: int = 0) -> int:
@@ -95,10 +154,10 @@ class TabSheetView(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(0, 0, self.width(), self.height(), QColor("#fbfbfc"))
+        painter.fillRect(0, 0, self.width(), self.height(), themed_color("#fbfbfc"))
 
         if not self.tab_data:
-            painter.setPen(QColor("#8e8e93"))
+            painter.setPen(themed_color("#8e8e93", text=True))
             painter.setFont(QFont("Arial", 12))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "TAB")
             return
@@ -112,13 +171,13 @@ class TabSheetView(QWidget):
         if not line_steps:
             return
 
-        painter.setPen(QColor("#8e8e93"))
+        painter.setPen(themed_color("#8e8e93", text=True))
         painter.setFont(QFont("Arial", 8, QFont.Weight.DemiBold))
         painter.drawText(8, row_top + 16, f"L{score_line}")
 
         for string_index in range(6):
             y = row_top + self.string_top + (string_index * self.string_spacing)
-            painter.setPen(QPen(QColor("#d1d1d6"), 1, Qt.PenStyle.SolidLine))
+            painter.setPen(QPen(themed_color("#d1d1d6"), 1, Qt.PenStyle.SolidLine))
             painter.drawLine(28, y, self.width() - 12, y)
 
         if self.selected_step in line_steps:
@@ -140,10 +199,10 @@ class TabSheetView(QWidget):
                 y_pos = row_top + self.string_top + ((string_number - 1) * self.string_spacing)
 
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor("#fbfbfc"))
+                painter.setBrush(themed_color("#fbfbfc"))
                 painter.drawRect(x_pos - 8, y_pos - 7, 16, 14)
 
-                painter.setPen(QColor("#111111"))
+                painter.setPen(themed_color("#111111", text=True))
                 painter.setFont(QFont("Helvetica", 10, QFont.Weight.Bold))
                 painter.drawText(
                     QRect(x_pos - self.note_radius, y_pos - self.note_radius, self.note_radius * 2, self.note_radius * 2),
@@ -260,6 +319,7 @@ class PracticeTabStrip(QFrame):
                 border: none;
             }
             """
+            + TAB_SCROLLBAR_QSS
         )
 
         self.title_label = QLabel("TAB")

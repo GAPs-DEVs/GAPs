@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy
+from PySide6.QtWidgets import QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy
 
 
 class CameraPanel(QGroupBox):
@@ -16,7 +16,6 @@ class CameraPanel(QGroupBox):
         self.start_button = QPushButton("카메라 시작")
         self.stop_button = QPushButton("카메라 끄기")
         self.stop_button.setEnabled(False)
-        self.reverse_checkbox = QCheckBox("줄 방향 반전")
         self.status_label = QLabel("카메라 대기")
         self.marker_status_label = QLabel()
         self.status_label.setStyleSheet("font-weight: 700;")
@@ -32,7 +31,6 @@ class CameraPanel(QGroupBox):
         layout.addWidget(QLabel("입력"), 0, 0)
         layout.addWidget(self.camera_combo, 0, 1)
         layout.addWidget(self.refresh_button, 0, 2)
-        layout.addWidget(self.reverse_checkbox, 1, 1, 1, 2)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.start_button)

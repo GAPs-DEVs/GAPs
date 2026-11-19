@@ -31,6 +31,7 @@ from vision.fretboard_mapping import (
     infer_selected_reference_fret_index,
     scale_length_ratio,
     suppress_fret_indices_from_grid,
+    with_string_margin,
 )
 
 
@@ -212,6 +213,22 @@ class FretboardMappingTests(unittest.TestCase):
         )
 
         self.assertIs(grid, prior_grid)
+
+    def test_string_margin_moves_outer_strings_without_changing_lines(self) -> None:
+        nut = DetectedLine(kind="nut", p0=(0.0, 0.0), p1=(0.0, 100.0), confidence=0.9)
+        fret = DetectedLine(kind="fret", p0=(50.0, 0.0), p1=(50.0, 100.0), confidence=0.9)
+        grid = build_grid_from_lines(nut, [fret])
+
+        wide = with_string_margin(grid, 0.0)
+        narrow = with_string_margin(grid, 0.2)
+
+        self.assertEqual(wide.nut_line, grid.nut_line)
+        self.assertEqual(wide.ordered_fret_lines, grid.ordered_fret_lines)
+        self.assertAlmostEqual(wide.string_crossings[0][0][1], 0.0)
+        self.assertAlmostEqual(wide.string_crossings[0][-1][1], 100.0)
+        self.assertAlmostEqual(narrow.string_crossings[1][0][1], 20.0)
+        self.assertAlmostEqual(narrow.string_crossings[1][-1][1], 80.0)
+        self.assertAlmostEqual(grid.string_crossings[0][0][1], 10.0, places=4)
 
     def test_open_string_marker_is_on_nut_line(self) -> None:
         grid = build_grid_from_lines(make_line("nut", 0.0), [make_line("fret", 20.0)])

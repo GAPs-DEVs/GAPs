@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QRect, Signal, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPixmap, QPolygonF
 
-from app.ui.tab_sheet_view import TabSheetView
+from app.ui.tab_sheet_view import TAB_SCROLLBAR_QSS, TabSheetView, scrollbar_qss
 
 
 def make_arrow_png(direction: str, color="#374151", size=12) -> str:
@@ -190,9 +190,9 @@ class AdminPage(QWidget):
         down_arrow = make_arrow_png("down")
 
         # ── [LoginPage / SelectPage와 통일된 미니멀 라이트 테마 QSS] ──
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
             QWidget {
-                font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
                 background-color: #f8f9fa;
                 color: #212529;
             }
@@ -343,19 +343,6 @@ class AdminPage(QWidget):
                 background-color: #fef2f2;
                 border-color: #fca5a5;
             }
-
-            /* 네비게이션 복귀 버튼 */
-            QPushButton#btn_back {
-                background-color: #ffffff;
-                color: #4b5563;
-                border: 1px solid #ced4da;
-                font-weight: 600;
-                padding: 12px;
-            }
-            QPushButton#btn_back:hover {
-                background-color: #f8f9fa;
-                border-color: #adb5bd;
-            }
         """.replace("UP_ARROW", up_arrow).replace("DOWN_ARROW", down_arrow))
 
         main_layout = QHBoxLayout(self)
@@ -413,13 +400,14 @@ class AdminPage(QWidget):
             QScrollArea {
                 border: 1px solid #e9ecef;
                 border-radius: 8px;
-                background-color: #ffffff;
+                background-color: #fbfbfc;
             }
-        """)
+        """ + TAB_SCROLLBAR_QSS)
 
         self.tab_sheet_view = TabSheetView()
         self.scroll_area.setWidget(self.tab_sheet_view)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         monitor_layout.addWidget(self.fretboard_monitor, stretch=4)
         monitor_layout.addWidget(self.scroll_area, stretch=5)
@@ -430,6 +418,7 @@ class AdminPage(QWidget):
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["연주 순서 (Step)", "기타 줄 (String)", "프렛 번호 (Fret)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setStyleSheet(scrollbar_qss("#ffffff"))
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
         self.table.cellChanged.connect(self.on_cell_changed)
         left_layout.addWidget(self.table, stretch=1)
@@ -501,20 +490,13 @@ class AdminPage(QWidget):
 
         right_layout.addStretch(1)
 
-        # 하단 네비게이션 복귀
-        btn_back = QPushButton("악보 선택으로 복귀")
-        btn_back.setObjectName("btn_back")
-        btn_back.setCursor(Qt.PointingHandCursor)
-        right_layout.addWidget(btn_back)
-
-        for btn in [btn_load, btn_save, btn_insert, btn_delete, btn_back]:
+        for btn in [btn_load, btn_save, btn_insert, btn_delete]:
             btn.setCursor(Qt.PointingHandCursor)
 
         btn_load.clicked.connect(self.load_json_file)
         btn_save.clicked.connect(self.save_json_file)
         btn_insert.clicked.connect(self.insert_row_data)
         btn_delete.clicked.connect(self.delete_selected_row)
-        btn_back.clicked.connect(self.go_back)
 
         main_layout.addWidget(left_card, stretch=3)
         main_layout.addWidget(right_card, stretch=1)
@@ -666,9 +648,3 @@ class AdminPage(QWidget):
             QMessageBox.information(self, "저장 완료", "수정 사항이 저장되었습니다.")
         except Exception as e:
             QMessageBox.critical(self, "오류", f"저장 실패: {e}")
-
-    def go_back(self):
-        if hasattr(self.main_window, "switch_to_select"):
-            self.main_window.switch_to_select()
-        else:
-            self.main_window.stacked_widget.setCurrentIndex(1)

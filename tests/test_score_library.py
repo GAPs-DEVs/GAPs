@@ -9,8 +9,9 @@ import pytest
 import requests
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidget, QLabel, QLineEdit, QGridLayout
+from PySide6.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QGridLayout
 
+import app.pages.select_page as select_page_module
 from app.api_client import APIClient, api_client
 from app.features.score_library import RemoveScoreThread
 from app.pages.select_page import ScoreCard, SelectPage
@@ -156,8 +157,8 @@ def test_card_button_and_cancel_confirmation(tmp_path, monkeypatch):
     QWidget.__init__(page)
     page.remove_thread = None
     page.db_mock_dir = str(tmp_path)
-    confirm = Mock(return_value=QMessageBox.StandardButton.No)
-    monkeypatch.setattr(QMessageBox, "question", confirm)
+    confirm = Mock(return_value=False)
+    monkeypatch.setattr(select_page_module, "ask_confirm", confirm)
     remove = Mock()
     monkeypatch.setattr(api_client, "remove_library_score", remove)
     card = ScoreCard("Private", path, lambda _: None, lambda _: None, page.remove_score, SCORE, False)
@@ -187,7 +188,7 @@ def test_confirmed_removal_refreshes_cards_and_keeps_local_score(tmp_path, monke
     page.search_input = QLineEdit()
     page.refresh_song_list()
     server_card = next(card for _, card in page.cards if card.score_id == SCORE)
-    monkeypatch.setattr(QMessageBox, "question", Mock(return_value=QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(select_page_module, "ask_confirm", Mock(return_value=True))
     delete = Mock(return_value=Mock(status_code=204))
     monkeypatch.setattr(requests, "delete", delete)
     page.remove_score(server_card)

@@ -10,7 +10,9 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import DEFAULT_SCORE_PATH
+from app.ui.fonts import apply_app_font
 from app.ui.main_window import MainWindow
+from app.ui.theme import install_theme
 from tools.fretboard_detection_viewer import resolve_camera_calibration_path, resolve_model_path
 from vision.camera_calibration import load_camera_calibration
 
@@ -36,6 +38,8 @@ def main() -> int:
     camera_calibration = load_camera_calibration(calibration_path) if calibration_path is not None else None
 
     app = QApplication(sys.argv)
+    apply_app_font(app)
+    install_theme(app)
     window = MainWindow(
         model_path=model_path,
         score_path=Path(args.score_json).expanduser().resolve(),

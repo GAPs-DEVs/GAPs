@@ -28,6 +28,13 @@ Python 버전과 잠금된 의존성은 `pyproject.toml`, `uv.lock` 기준으로
 
 ## 실행
 
+Google 로그인을 사용하려면 프로젝트 루트의 `.env.example`을 `.env`로 복사하고
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`을 입력합니다. 앱은 로그인 버튼을 누를 때
+이 파일을 읽으며, 같은 이름의 환경변수가 있으면 환경변수를 우선 사용합니다.
+설정이 누락되면 로그인 화면에서 설정 안내를 표시합니다.
+패키징한 앱은 실행 파일 옆의 외부 `.env`를 읽습니다.
+실제 값이 있는 `.env`는 Git과 공유 압축 파일에서 제외하고 `.env.example`만 공유합니다.
+
 메인 앱 실행:
 
 ```bash

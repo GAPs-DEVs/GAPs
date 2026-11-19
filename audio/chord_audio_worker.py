@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from queue import Empty, Full, Queue
+from threading import Lock
 from time import perf_counter
 
 import numpy as np
@@ -35,6 +36,7 @@ class ChordAudioWorker(QThread):
         restrike_names: Iterable[str] = (),
         onset_rise_db: float = 3.0,
         confirm_frames: int = 2,
+        target_id: int = 0,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -54,24 +56,58 @@ class ChordAudioWorker(QThread):
         self.update_interval_ms = update_interval_ms
         self.result_hold_ms = result_hold_ms
         self.device = device
-        self._judge_gate = ChordJudgeGate(
-            restrike_names=restrike_names,
-            onset_rise_db=onset_rise_db,
-            confirm_frames=confirm_frames,
-        )
-        self._running = False
+        self.target_id = target_id
+        self.onset_rise_db = onset_rise_db
+        self.confirm_frames = confirm_frames
+        self._judge_gate = self._new_judge_gate(restrike_names)
+        self._running = True
+        self._target_lock = Lock()
+        self._pending_target: tuple[list[ExpectedFrequency], tuple[str, ...], int] | None = None
 
-    def stop(self, timeout_ms: int = 2000) -> None:
+    def request_stop(self) -> None:
         self._running = False
         self.requestInterruption()
+
+    def stop(self, timeout_ms: int = 2000) -> None:
+        self.request_stop()
         if self.isRunning() and QThread.currentThread() is not self:
             self.wait(timeout_ms)
+
+    def set_target(
+        self,
+        expected_frequencies: list[ExpectedFrequency],
+        target_id: int,
+        restrike_names: Iterable[str] = (),
+    ) -> None:
+        if not expected_frequencies:
+            raise ValueError("expected_frequencies must not be empty.")
+        with self._target_lock:
+            self._pending_target = (list(expected_frequencies), tuple(restrike_names), target_id)
+
+    def _new_judge_gate(self, restrike_names: Iterable[str]) -> ChordJudgeGate:
+        return ChordJudgeGate(
+            restrike_names=restrike_names,
+            onset_rise_db=self.onset_rise_db,
+            confirm_frames=self.confirm_frames,
+        )
+
+    def _apply_pending_target(self) -> bool:
+        with self._target_lock:
+            pending = self._pending_target
+            self._pending_target = None
+        if pending is None:
+            return False
+        self.expected_frequencies, restrike_names, self.target_id = pending
+        self._judge_gate = self._new_judge_gate(restrike_names)
+        return True
 
     def run(self) -> None:
         try:
             import sounddevice as sd
         except Exception as exc:  # pragma: no cover - depends on local environment
             self._emit_error_result(f"sounddevice import failed: {exc}")
+            return
+        if not self._running:
             return
 
         audio_blocks: Queue[np.ndarray] = Queue(maxsize=8)
@@ -91,8 +127,8 @@ class ChordAudioWorker(QThread):
                     pass
                 audio_blocks.put_nowait(block)
 
-        self._running = True
-        self.result_ready.emit(self._idle_result("listening"))
+        self._apply_pending_target()
+        self._emit(self._idle_result("listening"))
         window_samples = max(1, int(self.sample_rate * self.analysis_window_ms / 1000.0))
         audio_buffer = np.asarray([], dtype=np.float32)
         last_correct_result: dict | None = None
@@ -109,6 +145,12 @@ class ChordAudioWorker(QThread):
             ):
                 next_emit_at = 0.0
                 while self._running and not self.isInterruptionRequested():
+                    if self._apply_pending_target():
+                        _drain(audio_blocks)
+                        audio_buffer = np.asarray([], dtype=np.float32)
+                        last_correct_result = None
+                        next_emit_at = 0.0
+                        self._emit(self._idle_result("listening"))
                     try:
                         block = audio_blocks.get(timeout=0.1)
                     except Empty:
@@ -136,7 +178,7 @@ class ChordAudioWorker(QThread):
                     if detection.is_correct:
                         last_correct_result = result
                         last_correct_at = now
-                        self.result_ready.emit(result)
+                        self._emit(result)
                     elif (
                         last_correct_result is not None
                         and (now - last_correct_at) * 1000.0 <= self.result_hold_ms
@@ -145,20 +187,24 @@ class ChordAudioWorker(QThread):
                         held_result["held"] = True
                         held_result["held_ms"] = int((now - last_correct_at) * 1000.0)
                         held_result["stream_status"] = stream_status_message
-                        self.result_ready.emit(held_result)
+                        self._emit(held_result)
                     else:
-                        self.result_ready.emit(result)
+                        self._emit(result)
                     next_emit_at = now + self.update_interval_ms / 1000.0
         except Exception as exc:  # pragma: no cover - hardware and permission dependent
             self._emit_error_result(f"Microphone input failed: {exc}")
         finally:
             self._running = False
 
+    def _emit(self, result: dict) -> None:
+        result["target_id"] = self.target_id
+        self.result_ready.emit(result)
+
     def _emit_error_result(self, message: str) -> None:
         self.error_message.emit(message)
         result = self._idle_result("error")
         result["message"] = message
-        self.result_ready.emit(result)
+        self._emit(result)
 
     def _idle_result(self, status: str = "idle") -> dict:
         return {
@@ -222,3 +268,11 @@ class ChordAudioWorker(QThread):
                 for expected in self.expected_frequencies
             ],
         }
+
+
+def _drain(blocks: Queue) -> None:
+    while True:
+        try:
+            blocks.get_nowait()
+        except Empty:
+            return
