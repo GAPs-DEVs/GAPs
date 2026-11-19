@@ -305,6 +305,7 @@ class MainWindow(QMainWindow):
         self.sidebar.new_score_requested.connect(self._handle_sidebar_new_score)
         self.sidebar.search_requested.connect(self._handle_sidebar_search)
         self.sidebar.recent_selected.connect(self._handle_sidebar_recent)
+        self.sidebar.recent_removed.connect(self._forget_recent_score)
         self.sidebar.logout_requested.connect(self._handle_sidebar_logout)
         self.sidebar.open_changed.connect(self._handle_sidebar_open_changed)
 
@@ -421,8 +422,7 @@ class MainWindow(QMainWindow):
     def _handle_sidebar_recent(self, path: str) -> None:
         if not os.path.exists(path):
             QMessageBox.warning(self, "파일 없음", "악보 파일을 찾을 수 없어 최근 목록에서 제거합니다.")
-            self._settings.setValue("recent_scores", [p for p in self._recent_score_paths() if p != path])
-            self._refresh_sidebar_recent()
+            self._forget_recent_score(path)
             return
         self._leave_practice()
         self.switch_to_practice(path)
@@ -456,6 +456,10 @@ class MainWindow(QMainWindow):
         resolved = str(path.resolve())
         paths = [resolved] + [p for p in self._recent_score_paths() if p != resolved]
         self._settings.setValue("recent_scores", paths[: self.RECENT_SCORE_LIMIT])
+
+    def _forget_recent_score(self, path: str) -> None:
+        self._settings.setValue("recent_scores", [p for p in self._recent_score_paths() if p != path])
+        self._refresh_sidebar_recent()
 
     def _refresh_sidebar_recent(self) -> None:
         scores = [(self._score_title(Path(p)), p) for p in self._recent_score_paths() if os.path.exists(p)]
