@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from app.api_client import api_client
+from app.config import USER_DATA_DIR
 from app.google_auth import GoogleAuthConfigurationError, fetch_google_id_token
 
 
@@ -33,9 +34,7 @@ class LoginPage(QWidget):
         self.main_window = main_window
 
         # 로컬 유저 DB 파일 경로
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_dir))
-        self.db_dir = os.path.join(project_root, "data")
+        self.db_dir = str(USER_DATA_DIR)
         os.makedirs(self.db_dir, exist_ok=True)
         self.users_file = os.path.join(self.db_dir, "users.json")
         self._ensure_user_db()
