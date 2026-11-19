@@ -52,7 +52,6 @@ class MainWindow(QMainWindow):
         camera_calibration: CameraCalibration | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("GAPs")
         self.resize(1440, 900)
         apply_native_title_bar(self)
 
@@ -363,14 +362,10 @@ class MainWindow(QMainWindow):
     # 클래스 내부에 화면 전환 라우터 메서드 추가/보강
     # ── [화면 라우팅 컨트롤러] ──
 
-    PAGE_TITLES = ("로그인", "악보 보관함", "연습", "악보 편집")
     PAGE_NAV_KEYS = (None, "library", "practice", "editor")
     RECENT_SCORE_LIMIT = 5
 
     def _handle_page_changed(self, index: int) -> None:
-        page_title = self.PAGE_TITLES[index] if 0 <= index < len(self.PAGE_TITLES) else ""
-        self.setWindowTitle(f"GAPs — {page_title}" if page_title else "GAPs")
-
         on_login = index == 0
         self.sidebar_toggle.setVisible(not on_login and not self.isFullScreen())
         if on_login:
