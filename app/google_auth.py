@@ -6,6 +6,7 @@ import socket
 import struct
 import sys
 
+from google_auth_oauthlib import flow as _flow
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 
@@ -27,6 +28,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
+
+if sys.platform != "win32":
+    _flow._ExclusiveWSGIServer.allow_reuse_address = True
 
 
 class GoogleAuthConfigurationError(ValueError):
