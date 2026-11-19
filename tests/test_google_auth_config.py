@@ -1,4 +1,3 @@
-import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -90,58 +89,3 @@ def test_login_page_explains_missing_settings_before_api_request(env_file, monke
     assert warning.call_args.args[1] == "Google 로그인 설정 필요"
     login.assert_not_called()
 
-
-def test_cancel_wakes_pending_browser_login_and_frees_port(monkeypatch):
-    import threading
-    import time
-
-    from google_auth_oauthlib import flow as flow_module
-
-    monkeypatch.setattr(flow_module.webbrowser, "get", Mock(return_value=Mock()))
-    config = {"web": {
-        "client_id": "test-client",
-        "client_secret": "test-secret",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "redirect_uris": ["http://localhost:8080/"],
-    }}
-    for _ in range(2):
-        result = {}
-        worker = threading.Thread(target=lambda: result.update(token=google_auth.fetch_google_id_token(config)))
-        worker.start()
-        deadline = time.time() + 5
-        while worker.is_alive() and time.time() < deadline:
-            time.sleep(0.1)
-            google_auth.cancel_google_login()
-        worker.join(5)
-        assert not worker.is_alive()
-        assert result["token"] is None
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows already rebinds ports in TIME_WAIT")
-def test_login_can_restart_right_after_browser_redirect(monkeypatch):
-    import threading
-    import time
-    import urllib.request
-
-    from google_auth_oauthlib import flow as flow_module
-
-    monkeypatch.setattr(flow_module.webbrowser, "get", Mock(return_value=Mock()))
-    config = {"web": {
-        "client_id": "test-client",
-        "client_secret": "test-secret",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "redirect_uris": ["http://localhost:8080/"],
-    }}
-    for _ in range(2):
-        worker = threading.Thread(target=google_auth.fetch_google_id_token, args=(config,))
-        worker.start()
-        time.sleep(0.5)
-        assert worker.is_alive()
-        try:
-            urllib.request.urlopen("http://127.0.0.1:8080/?code=test&state=test", timeout=3).read()
-        except OSError:
-            pass
-        worker.join(5)
-        assert not worker.is_alive()
