@@ -60,6 +60,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/icon.ico',
 )
 
 coll = COLLECT(
@@ -78,7 +79,7 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
         name='GuitarPracticeSupport.app',
-        icon=None,
+        icon='assets/icon.icns',
         bundle_identifier='com.capstone.guitarpractice',
         version=APP_VERSION,
         info_plist={
