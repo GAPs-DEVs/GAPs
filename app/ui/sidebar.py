@@ -435,6 +435,10 @@ class Sidebar(QFrame):
     def minimumSizeHint(self) -> QSize:
         return QSize(0, 0)
 
+    def set_top_inset(self, top_inset: int) -> None:
+        self.top_inset = top_inset
+        self.body.layout().setContentsMargins(8, top_inset + 10, 8, 10)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.body.setGeometry(0, 0, SIDEBAR_WIDTH - 1, self.height())
