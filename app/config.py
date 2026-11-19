@@ -26,3 +26,4 @@ DEFAULT_SCORE_PATH = PROJECT_ROOT / "examples" / "score_practice_sample.json"
 DEFAULT_AUTO_ADVANCE_DELAY_MS = 500
 DEFAULT_CONF_THRESHOLD = 0.25
 DEFAULT_IMAGE_SIZE = 960
+PRACTICE_REPORT_URL = "https://gaps-devs.vercel.app/report"
