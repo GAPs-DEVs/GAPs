@@ -12,9 +12,10 @@ from app.utils.macos_sdk import relaunch_with_latest_sdk
 if __name__ == "__main__":
     relaunch_with_latest_sdk()
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from app.config import DEFAULT_SCORE_PATH
+from app.config import DEFAULT_SCORE_PATH, PROJECT_ROOT
 from app.ui.fonts import apply_app_font
 from app.ui.main_window import MainWindow
 from app.ui.theme import install_theme
@@ -43,6 +44,7 @@ def main() -> int:
     camera_calibration = load_camera_calibration(calibration_path) if calibration_path is not None else None
 
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(PROJECT_ROOT / "assets" / ("icon.ico" if sys.platform == "win32" else "icon.png"))))
     apply_app_font(app)
     install_theme(app)
     window = MainWindow(
