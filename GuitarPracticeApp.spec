@@ -37,6 +37,10 @@ added_datas = [
     ('models', 'models'),
 ]
 
+if sys.platform == 'win32':
+    # Qt가 실행 중 읽는 ICO 파일은 EXE 아이콘 리소스와 별도로 번들에 포함한다.
+    added_datas.append(('assets/icon.ico', 'assets'))
+
 if os.path.exists('.env'):
     added_datas.append(('.env', '.'))
 
