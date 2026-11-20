@@ -55,7 +55,7 @@ def test_identity_follows_sync_pages(tmp_path, monkeypatch):
 
 # Exercise production event handlers without loading camera/model hardware.
 def handlers():
-    source = ast.parse(Path('app/ui/main_window.py').read_text())
+    source = ast.parse(Path('app/ui/main_window.py').read_text(encoding="utf-8"))
     cls = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == 'MainWindow')
     names = {'_handle_audio_result','on_note_evaluated','_complete_practice','next_step','_handle_interactive_advance_timeout'}
     subset = ast.Module(body=[n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names], type_ignores=[])
