@@ -9,6 +9,7 @@ class PracticeResultCollector:
     self.score_version_id = score_version_id
     self.speed_multiplier = round(speed_multiplier, 2)
     self.started_at = datetime.now(timezone.utc).isoformat()
+    self.started_step_no = 1
     self.results = []
     self.attempt_counters = {}  # step_id별 attempt_no 관리
 
@@ -50,7 +51,7 @@ class PracticeResultCollector:
         "mode": "interactive",
         "status": status,
         "speed_multiplier": self.speed_multiplier,
-        "started_step_no": 1,
+        "started_step_no": self.started_step_no,
         "started_at": self.started_at,
         "ended_at": ended_at,
         "active_duration_ms": max(0, active_duration_ms),

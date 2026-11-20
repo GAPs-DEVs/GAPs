@@ -47,6 +47,7 @@ from app.pages.select_page import SelectPage
 from app.pages.admin_page import AdminPage
 from app.pages.login_page import LoginPage
 from app.practice_recorder import PracticeResultCollector
+from app.practice_identity import resolve_practice_identity
 from app.api_client import api_client
 
 
@@ -1050,21 +1051,20 @@ class MainWindow(QMainWindow):
         if self.practice_running:
             return
 
-        # 1. 수집기(PracticeResultCollector) 세션 초기화
-        v_id = None
-        score_obj = getattr(self, "current_score", None)
-        if isinstance(score_obj, dict):
-            v_id = score_obj.get("version_id") or score_obj.get("selected_version_id")
-        elif hasattr(score_obj, "version_id"):
-            v_id = getattr(score_obj, "version_id", None)
-
-        # 실제 서버 DB에 등록된 로망스 기본 version_id로 fallback
-        if not v_id:
-            v_id = "0bc0c931-3c0c-5b8a-a3f6-54768c109f21"
-
-        self.recorder = PracticeResultCollector(score_version_id=v_id)
+        self.recorder = None
+        self._recording_last_outcome = None
+        self._recording_step_ids = {}
+        # Automatic playback has no measured judgments; do not invent a result.
+        if api_client.access_token and self.current_mode() == "interactive":
+            try:
+                version_id, self._recording_step_ids = resolve_practice_identity(api_client, self.score_path)
+                self.recorder = PracticeResultCollector(score_version_id=version_id)
+                self.recorder.started_step_no = self.current_step().step
+            except Exception:
+                QMessageBox.warning(self, "연습 기록 저장 불가",
+                    "선택한 악보의 서버 버전·단계 정보를 확인하지 못했습니다. "
+                    "이번 연습은 서버에 저장되지 않습니다. 악보함을 동기화한 뒤 다시 선택해주세요.")
         self.start_time = time.time()
-        print(f"[PracticeRecorder] 연습 세션 시작: version_id={v_id}")
 
         # 2. 기존 연습 실행 및 디스플레이/오디오 설정
         self.practice_running = True
@@ -1111,46 +1111,12 @@ class MainWindow(QMainWindow):
         self._move_to_step(self.current_index - 1)
 
     def next_step(self) -> None:
-        # 1. 다음 스텝으로 넘어가기 전, 현재 스텝을 정답(correct)으로 수집기에 기록
-        if getattr(self, "recorder", None):
-            cur_step = self.current_step()
-            
-            # (1) cur_step 객체 자체 속성 탐색
-            step_id = getattr(cur_step, "score_step_id", None)
-            
-            # (2) cur_step이 dict 형태인 경우
-            if not step_id and isinstance(cur_step, dict):
-                step_id = cur_step.get("score_step_id")
-                
-            # (3) cur_step 내부의 notes 리스트에서 추출
-            if not step_id:
-                notes = getattr(cur_step, "notes", None) or getattr(cur_step, "target_notes", None)
-                if notes and len(notes) > 0:
-                    first_note = notes[0]
-                    step_id = getattr(first_note, "score_step_id", None) or (
-                        first_note.get("score_step_id") if isinstance(first_note, dict) else None
-                    )
+        # Moving manually is a skip, not an observed correct performance.
+        step_id = getattr(self, "_recording_step_ids", {}).get(self.current_step().step)
+        if getattr(self, "recorder", None) and step_id:
+            self.recorder.record_attempt(score_step_id=step_id, outcome="skipped")
 
-            # (4) 속성을 찾지 못한 경우: DB에 실제 존재하는 로망스 1번 스텝 ID로 안전하게 방어
-            if not step_id:
-                step_id = "cbabf6f7-c9c9-512c-8530-8fe8f55d666d"
-                print(f"[PracticeRecorder] 대체 step_id 사용: {step_id}")
-            else:
-                print(f"[PracticeRecorder] 스텝 판정 기록: step_id={step_id}")
-
-            self.on_note_evaluated(step_id=step_id, is_correct=True)
-
-        # 2. 마지막 스텝 완주 검사 (완주 시 completed 상태로 전송)
         if self.current_index >= len(self.practice_steps) - 1:
-            if getattr(self, "recorder", None):
-                active_ms = 0
-                if getattr(self, "start_time", None):
-                    active_ms = int((time.time() - self.start_time) * 1000)
-
-                payload = self.recorder.build_payload(status="completed", active_duration_ms=active_ms)
-                api_client.save_practice_record(payload)
-                self.recorder = None
-
             self._complete_practice()
             return
 
@@ -1181,6 +1147,13 @@ class MainWindow(QMainWindow):
             self._schedule_auto_advance()
 
     def _complete_practice(self) -> None:
+        if getattr(self, "recorder", None):
+            active_ms = int((time.time() - self.start_time) * 1000)
+            payload = self.recorder.build_payload(status="completed", active_duration_ms=active_ms)
+            success, _ = api_client.save_practice_record(payload)
+            if not success:
+                QMessageBox.warning(self, "기록 저장 실패", "연습 결과를 서버에 저장하지 못했습니다.")
+            self.recorder = None
         self.practice_running = False
         self.auto_flow_timer.stop()
         self._cancel_pending_interactive_advance()
@@ -1222,6 +1195,17 @@ class MainWindow(QMainWindow):
         enriched = with_step_context(result, step, self.current_index, len(self.practice_steps))
         enriched = self.retrigger_gate.apply(enriched)
         self._render_audio_result(enriched)
+
+        if self.practice_running and not enriched.get("held"):
+            status = enriched.get("status")
+            if status == "no_signal":
+                self._recording_last_outcome = None
+            elif status in {"correct", "incorrect"} and enriched.get("retrigger_ready", True):
+                outcome = (self.current_index, status)
+                step_id = getattr(self, "_recording_step_ids", {}).get(step.step)
+                if step_id and outcome != getattr(self, "_recording_last_outcome", None):
+                    self.on_note_evaluated(step_id, status == "correct")
+                    self._recording_last_outcome = outcome
 
         if enriched.get("is_correct") and not enriched.get("held"):
             self._schedule_interactive_advance()
