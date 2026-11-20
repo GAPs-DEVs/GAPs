@@ -8,6 +8,7 @@ from time import perf_counter
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
+from audio.audio_worker import open_input_stream
 from audio.polyphonic_detection import (
     ChordJudgeGate,
     ExpectedFrequency,
@@ -129,20 +130,14 @@ class ChordAudioWorker(QThread):
 
         self._apply_pending_target()
         self._emit(self._idle_result("listening"))
-        window_samples = max(1, int(self.sample_rate * self.analysis_window_ms / 1000.0))
         audio_buffer = np.asarray([], dtype=np.float32)
         last_correct_result: dict | None = None
         last_correct_at = 0.0
 
         try:
-            with sd.InputStream(
-                samplerate=self.sample_rate,
-                blocksize=self.block_size,
-                channels=1,
-                dtype="float32",
-                device=self.device,
-                callback=audio_callback,
-            ):
+            with open_input_stream(sd, self.device, self.sample_rate, self.block_size, audio_callback) as stream:
+                sample_rate = int(stream.samplerate)
+                window_samples = max(1, int(sample_rate * self.analysis_window_ms / 1000.0))
                 next_emit_at = 0.0
                 while self._running and not self.isInterruptionRequested():
                     if self._apply_pending_target():
@@ -168,7 +163,7 @@ class ChordAudioWorker(QThread):
 
                     detection = detect_expected_frequencies_cqt(
                         audio_buffer,
-                        sample_rate=self.sample_rate,
+                        sample_rate=sample_rate,
                         expected_frequencies=self.expected_frequencies,
                         tolerance_cents=self.tolerance_cents,
                         silence_threshold=self.silence_threshold,

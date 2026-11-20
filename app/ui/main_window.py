@@ -59,8 +59,6 @@ class MainWindow(QMainWindow):
         camera_calibration: CameraCalibration | None = None,
     ) -> None:
         super().__init__()
-        self.resize(1440, 900)
-        apply_native_title_bar(self)
 
         self.model_path = model_path
         self.score_path = score_path
@@ -374,6 +372,11 @@ class MainWindow(QMainWindow):
         self.refresh_practice_display()
         self.refresh_marker_status()
         self._handle_page_changed(self.stacked_widget.currentIndex())
+
+        # Windows에서 네이티브 프레임을 만들면 resizeEvent가 즉시 호출될 수 있다.
+        # 이벤트가 사용하는 지판 위젯과 화면 상태를 초기화한 뒤 창 크기와 프레임을 설정한다.
+        self.resize(1440, 900)
+        apply_native_title_bar(self)
 
     # 클래스 내부에 화면 전환 라우터 메서드 추가/보강
     # ── [화면 라우팅 컨트롤러] ──
