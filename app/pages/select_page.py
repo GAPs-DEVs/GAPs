@@ -287,6 +287,11 @@ class SelectPage(QWidget):
         super().__init__()
         self.main_window = main_window
         self.remove_thread = None
+        self.parse_thread = None
+        self._parse_queue = []
+        self._parse_results = []
+        self._parse_total = 0
+        self._parse_mode = "GP"
 
         self.db_mock_dir = str(USER_DATA_DIR / "cached_scores")
         os.makedirs(self.db_mock_dir, exist_ok=True)
@@ -582,21 +587,48 @@ class SelectPage(QWidget):
             self.main_window.stacked_widget.setCurrentIndex(0)
 
     def start_async_parsing(self, mode):
-        if mode == "GP":
-            f, _ = QFileDialog.getOpenFileName(self, "GuitarPro 악보 열기", "", "GuitarPro (*.gp*)")
-        else:
-            f, _ = QFileDialog.getOpenFileName(self, "악보 이미지 열기", "", "Images (*.jpg *.png)")
-        if not f:
+        if self.parse_thread is not None or self._parse_queue:
             return
 
-        self.loading_dialog = QProgressDialog("악보 데이터를 분석하고 있습니다...", None, 0, 0, self)
+        if mode == "GP":
+            files, _ = QFileDialog.getOpenFileNames(self, "GuitarPro 악보 열기", "", "GuitarPro (*.gp*)")
+        else:
+            files, _ = QFileDialog.getOpenFileNames(self, "악보 이미지 열기", "", "Images (*.jpg *.png)")
+        if not files:
+            return
+
+        self._parse_mode = mode
+        self._parse_queue = list(files)
+        self._parse_total = len(files)
+        self._parse_results = []
+
+        maximum = self._parse_total if self._parse_total > 1 else 0
+        self.loading_dialog = QProgressDialog("악보 데이터를 분석하고 있습니다...", None, 0, maximum, self)
         self.loading_dialog.setWindowTitle("데이터 처리 중")
         self.loading_dialog.setWindowModality(Qt.WindowModal)
+        self.loading_dialog.setAutoClose(False)
+        self.loading_dialog.setAutoReset(False)
         self.loading_dialog.setStyleSheet("background-color: #ffffff; color: #212529;")
         self.loading_dialog.show()
         QApplication.processEvents()
 
-        self.parse_thread = ParsingThread(f, self.db_mock_dir, mode)
+        self._parse_next()
+
+    def _parse_next(self):
+        if not self._parse_queue:
+            self._finish_parsing_batch()
+            return
+
+        file_path = self._parse_queue.pop(0)
+        if self._parse_total > 1:
+            done = self._parse_total - len(self._parse_queue) - 1
+            self.loading_dialog.setValue(done)
+            self.loading_dialog.setLabelText(
+                f"악보 데이터를 분석하고 있습니다... ({done + 1}/{self._parse_total})\n"
+                f"{os.path.basename(file_path)}"
+            )
+
+        self.parse_thread = ParsingThread(file_path, self.db_mock_dir, self._parse_mode)
         self.parse_thread.parsing_finished.connect(self.on_parsing_completed)
         self.parse_thread.start()
 
@@ -651,55 +683,94 @@ class SelectPage(QWidget):
     #         QMessageBox.critical(self, "오류", message)
             
     def on_parsing_completed(self, success, message):
-        """GuitarPro 파싱 완료 시 백엔드 업로드 및 화면 갱신"""
-        if hasattr(self, "loading_dialog") and self.loading_dialog:
-            self.loading_dialog.close()
+        """GuitarPro 파싱 완료 시 백엔드 업로드 후 다음 파일 진행"""
+        thread = self.parse_thread
+        thread.wait()
+        thread.deleteLater()
+        self.parse_thread = None
 
         if success:
-            base_file_path = getattr(self.parse_thread, "file_path", "")
-            raw_title = os.path.splitext(os.path.basename(base_file_path))[0]
-            clean_title = raw_title.replace("_", " ").title()
-            output_json_path = os.path.join(self.db_mock_dir, f"{raw_title.lower()}_parsed.json")
-            summary = f"'{os.path.basename(base_file_path)}' 악보 분석이 완료되었습니다."
-            kind, detail = "success", ""
-
-            if os.path.exists(output_json_path):
-                try:
-                    with open(output_json_path, "r", encoding="utf-8") as f:
-                        parsed_data = json.load(f)
-
-                    # 💡 백엔드 스펙에 맞춰 전체 음표 리스트를 그대로 전송
-                    up_ok, up_res = api_client.upload_score(
-                        title=f"{clean_title} - Client Upload",
-                        parsed_notes=parsed_data,
-                        source_type="guitar_pro"
-                    )
-
-                    if up_ok:
-                        score = up_res.get("score", up_res)
-                        api_client.cache_server_score(
-                            self.db_mock_dir, score.get("score_id") or score.get("id"),
-                            score.get("title", clean_title), parsed_data, is_default=False,
-                        )
-                        # This is the parser's generated cache, not the selected source file.
-                        os.unlink(output_json_path)
-                        summary += "\n서버 악보함에 등록되었습니다."
-                    elif up_res == "GUEST_MODE":
-                        summary += "\n[게스트 모드] 로컬 저장되었습니다."
-                    else:
-                        summary += "\n이 기기에는 저장했지만 서버 업로드에 실패했습니다."
-                        kind, detail = "warning", str(up_res)
-
-                except Exception as e:
-                    print(f"[업로드 예외] {e}")
-                    summary += "\n서버 업로드 중 문제가 발생했습니다."
-                    kind, detail = "warning", str(e)
-
-            show_message(self, "악보를 추가했습니다", summary, kind=kind, detail=detail)
-            self.refresh_song_list()
+            kind, summary, detail = self._register_parsed_score(thread.file_path)
         else:
-            show_message(self, "악보를 분석하지 못했습니다", "파일 형식이나 내용을 확인해 주세요.",
-                         kind="danger", detail=message)
+            kind, summary, detail = "danger", "파일 형식이나 내용을 확인해 주세요.", message
+        self._parse_results.append((thread.file_path, kind, summary, detail))
+
+        self._parse_next()
+
+    def _register_parsed_score(self, base_file_path):
+        raw_title = os.path.splitext(os.path.basename(base_file_path))[0]
+        clean_title = raw_title.replace("_", " ").title()
+        output_json_path = os.path.join(self.db_mock_dir, f"{raw_title.lower()}_parsed.json")
+        summary = f"'{os.path.basename(base_file_path)}' 악보 분석이 완료되었습니다."
+        kind, detail = "success", ""
+
+        if os.path.exists(output_json_path):
+            try:
+                with open(output_json_path, "r", encoding="utf-8") as f:
+                    parsed_data = json.load(f)
+
+                # 💡 백엔드 스펙에 맞춰 전체 음표 리스트를 그대로 전송
+                up_ok, up_res = api_client.upload_score(
+                    title=f"{clean_title} - Client Upload",
+                    parsed_notes=parsed_data,
+                    source_type="guitar_pro"
+                )
+
+                if up_ok:
+                    score = up_res.get("score", up_res)
+                    api_client.cache_server_score(
+                        self.db_mock_dir, score.get("score_id") or score.get("id"),
+                        score.get("title", clean_title), parsed_data, is_default=False,
+                    )
+                    # This is the parser's generated cache, not the selected source file.
+                    os.unlink(output_json_path)
+                    summary += "\n서버 악보함에 등록되었습니다."
+                elif up_res == "GUEST_MODE":
+                    summary += "\n[게스트 모드] 로컬 저장되었습니다."
+                else:
+                    summary += "\n이 기기에는 저장했지만 서버 업로드에 실패했습니다."
+                    kind, detail = "warning", str(up_res)
+
+            except Exception as e:
+                print(f"[업로드 예외] {e}")
+                summary += "\n서버 업로드 중 문제가 발생했습니다."
+                kind, detail = "warning", str(e)
+
+        return kind, summary, detail
+
+    def _finish_parsing_batch(self):
+        if self.loading_dialog:
+            self.loading_dialog.close()
+            self.loading_dialog = None
+
+        results, self._parse_results = self._parse_results, []
+        if any(kind != "danger" for _, kind, _, _ in results):
+            self.refresh_song_list()
+
+        if len(results) == 1:
+            _, kind, summary, detail = results[0]
+            title = "악보를 분석하지 못했습니다" if kind == "danger" else "악보를 추가했습니다"
+            show_message(self, title, summary, kind=kind, detail=detail)
+            return
+
+        failed = [r for r in results if r[1] == "danger"]
+        warned = [r for r in results if r[1] == "warning"]
+        added = len(results) - len(failed)
+
+        summary = f"{len(results)}개 중 {added}개 악보를 추가했습니다."
+        if failed:
+            summary += f"\n{len(failed)}개는 분석하지 못했습니다."
+        if warned:
+            summary += f"\n{len(warned)}개는 이 기기에만 저장되고 서버 업로드에 실패했습니다."
+        detail = "\n".join(
+            f"{os.path.basename(path)}: {item_detail}" for path, _, _, item_detail in failed + warned
+        )
+
+        if added == 0:
+            kind, title = "danger", "악보를 분석하지 못했습니다"
+        else:
+            kind, title = ("warning" if failed or warned else "success"), "악보를 추가했습니다"
+        show_message(self, title, summary, kind=kind, detail=detail)
             
     def clear_local_scores(self):
         """로컬 악보 저장소(self.db_mock_dir)의 캐시 파일들을 모두 삭제"""
