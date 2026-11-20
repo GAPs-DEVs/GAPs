@@ -221,6 +221,14 @@ class MainWindow(QMainWindow):
                 border: none;
                 width: 20px;
             }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                color: #212529;
+                border: 1px solid #ced4da;
+                selection-background-color: #f1f3f5;
+                selection-color: #111827;
+                outline: 0;
+            }
 
             /* 슬라이더 */
             QSlider::groove:horizontal {
