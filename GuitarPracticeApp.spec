@@ -35,8 +35,6 @@ if sys.platform == 'win32':
 added_datas = [
     ('examples', 'examples'),
     ('models', 'models'),
-    ('assets/icon.ico', 'assets'),
-    ('assets/icon.png', 'assets'),
 ]
 
 if os.path.exists('.env'):
