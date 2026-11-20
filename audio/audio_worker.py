@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from queue import Empty, Full, Queue
+from threading import Lock
 from time import perf_counter
 
 import numpy as np
@@ -27,6 +28,7 @@ class AudioWorker(QThread):
         result_hold_ms: int = 900,
         pitch_backend: str = "librosa_yin",
         device: int | str | None = None,
+        target_id: int = 0,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -48,19 +50,42 @@ class AudioWorker(QThread):
         self.result_hold_ms = result_hold_ms
         self.pitch_backend = pitch_backend
         self.device = device
-        self._running = False
+        self.target_id = target_id
+        self._running = True
+        self._target_lock = Lock()
+        self._pending_target: tuple[float, int] | None = None
 
-    def stop(self, timeout_ms: int = 2000) -> None:
+    def request_stop(self) -> None:
         self._running = False
         self.requestInterruption()
+
+    def stop(self, timeout_ms: int = 2000) -> None:
+        self.request_stop()
         if self.isRunning() and QThread.currentThread() is not self:
             self.wait(timeout_ms)
+
+    def set_target(self, expected_frequency: float, target_id: int) -> None:
+        if expected_frequency <= 0:
+            raise ValueError("expected_frequency must be greater than 0 Hz.")
+        with self._target_lock:
+            self._pending_target = (expected_frequency, target_id)
+
+    def _apply_pending_target(self) -> bool:
+        with self._target_lock:
+            pending = self._pending_target
+            self._pending_target = None
+        if pending is None:
+            return False
+        self.expected_frequency, self.target_id = pending
+        return True
 
     def run(self) -> None:
         try:
             import sounddevice as sd
         except Exception as exc:  # pragma: no cover - depends on local environment
             self._emit_error_result(f"sounddevice import failed: {exc}")
+            return
+        if not self._running:
             return
 
         audio_blocks: Queue[np.ndarray] = Queue(maxsize=3)
@@ -80,8 +105,8 @@ class AudioWorker(QThread):
                     pass
                 audio_blocks.put_nowait(block)
 
-        self._running = True
-        self.result_ready.emit(self._build_result(status="listening"))
+        self._apply_pending_target()
+        self._emit(self._build_result(status="listening"))
         last_voiced_result: dict | None = None
         last_voiced_at = 0.0
 
@@ -96,6 +121,11 @@ class AudioWorker(QThread):
             ):
                 next_emit_at = 0.0
                 while self._running and not self.isInterruptionRequested():
+                    if self._apply_pending_target():
+                        _drain(audio_blocks)
+                        last_voiced_result = None
+                        next_emit_at = 0.0
+                        self._emit(self._build_result(status="listening"))
                     try:
                         block = audio_blocks.get(timeout=0.1)
                     except Empty:
@@ -123,7 +153,7 @@ class AudioWorker(QThread):
                     if detection.frequency is not None:
                         last_voiced_result = live_result
                         last_voiced_at = now
-                        self.result_ready.emit(live_result)
+                        self._emit(live_result)
                     elif (
                         last_voiced_result is not None
                         and (now - last_voiced_at) * 1000.0 <= self.result_hold_ms
@@ -132,18 +162,22 @@ class AudioWorker(QThread):
                         held_result["held"] = True
                         held_result["held_ms"] = int((now - last_voiced_at) * 1000.0)
                         held_result["stream_status"] = stream_status_message
-                        self.result_ready.emit(held_result)
+                        self._emit(held_result)
                     else:
-                        self.result_ready.emit(live_result)
+                        self._emit(live_result)
                     next_emit_at = now + self.update_interval_ms / 1000.0
         except Exception as exc:  # pragma: no cover - hardware and permission dependent
             self._emit_error_result(f"Microphone input failed: {exc}")
         finally:
             self._running = False
 
+    def _emit(self, result: dict) -> None:
+        result["target_id"] = self.target_id
+        self.result_ready.emit(result)
+
     def _emit_error_result(self, message: str) -> None:
         self.error_message.emit(message)
-        self.result_ready.emit(self._build_result(status="error", message=message))
+        self._emit(self._build_result(status="error", message=message))
 
     def _build_result(
         self,
@@ -188,3 +222,11 @@ class AudioWorker(QThread):
             "held_ms": held_ms,
             "pitch_backend": pitch_backend or self.pitch_backend,
         }
+
+
+def _drain(blocks: Queue) -> None:
+    while True:
+        try:
+            blocks.get_nowait()
+        except Empty:
+            return

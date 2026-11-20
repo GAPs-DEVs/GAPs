@@ -50,3 +50,6 @@ pip-wheel-metadata/
 
 # Local camera performance reports
 /artifacts/performance/
+
+# Local user data
+/data/

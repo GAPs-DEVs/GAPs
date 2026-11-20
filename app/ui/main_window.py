@@ -7,11 +7,11 @@ import uuid
 import time
 
 
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QImage, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QFrame, QScrollArea, QMainWindow, QMessageBox, QVBoxLayout, QWidget, QStackedWidget, QPushButton, QApplication
 
-from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH
+from app.config import DEFAULT_AUTO_ADVANCE_DELAY_MS, DEFAULT_CONF_THRESHOLD, DEFAULT_IMAGE_SIZE, DEFAULT_SCORE_PATH, PRACTICE_REPORT_URL
 from app.features.audio_devices import enumerate_audio_input_devices
 from app.features.practice_audio import PracticeAudioController, RetriggerGate, with_step_context
 from app.features.video import PracticeFrameStats, PracticeVideoWorker
@@ -19,7 +19,14 @@ from app.ui.camera_panel import CameraPanel
 from app.ui.practice_panel import PracticePanel
 from app.ui.tab_sheet_view import PracticeTabStrip
 from app.ui.sidebar import Sidebar
-from app.ui.title_bar import TITLE_BAR_HEIGHT, TRAFFIC_LIGHTS_WIDTH, SidebarToggleButton, TitleBar, apply_native_title_bar
+from app.ui.title_bar import (
+    TITLE_BAR_HEIGHT,
+    TRAFFIC_LIGHTS_WIDTH,
+    SidebarToggleButton,
+    TitleBar,
+    apply_native_title_bar,
+    native_title_bar_layout,
+)
 from app.ui.tracking_panel import DEFAULT_STRING_MARGIN_PERCENT, TrackingPanel
 from app.ui.video_surface import VideoSurface
 from practice.score_steps import (
@@ -53,7 +60,6 @@ class MainWindow(QMainWindow):
         camera_calibration: CameraCalibration | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("Guitar Practice")
         self.resize(1440, 900)
         apply_native_title_bar(self)
 
@@ -307,6 +313,7 @@ class MainWindow(QMainWindow):
         self.sidebar.new_score_requested.connect(self._handle_sidebar_new_score)
         self.sidebar.search_requested.connect(self._handle_sidebar_search)
         self.sidebar.recent_selected.connect(self._handle_sidebar_recent)
+        self.sidebar.recent_removed.connect(self._forget_recent_score)
         self.sidebar.logout_requested.connect(self._handle_sidebar_logout)
         self.sidebar.open_changed.connect(self._handle_sidebar_open_changed)
 
@@ -364,14 +371,10 @@ class MainWindow(QMainWindow):
     # 클래스 내부에 화면 전환 라우터 메서드 추가/보강
     # ── [화면 라우팅 컨트롤러] ──
 
-    PAGE_TITLES = ("로그인", "악보 보관함", "연습", "악보 편집")
     PAGE_NAV_KEYS = (None, "library", "practice", "editor")
     RECENT_SCORE_LIMIT = 5
 
     def _handle_page_changed(self, index: int) -> None:
-        page_title = self.PAGE_TITLES[index] if 0 <= index < len(self.PAGE_TITLES) else ""
-        self.setWindowTitle(f"Guitar Practice — {page_title}" if page_title else "Guitar Practice")
-
         on_login = index == 0
         self.sidebar_toggle.setVisible(not on_login and not self.isFullScreen())
         if on_login:
@@ -412,6 +415,8 @@ class MainWindow(QMainWindow):
                 self.stacked_widget.setCurrentIndex(3)
             else:
                 self.switch_to_admin(str(self.score_path))
+        elif key == "history":
+            QDesktopServices.openUrl(QUrl(PRACTICE_REPORT_URL))
 
     def _handle_sidebar_new_score(self) -> None:
         self._leave_practice()
@@ -427,8 +432,7 @@ class MainWindow(QMainWindow):
     def _handle_sidebar_recent(self, path: str) -> None:
         if not os.path.exists(path):
             QMessageBox.warning(self, "파일 없음", "악보 파일을 찾을 수 없어 최근 목록에서 제거합니다.")
-            self._settings.setValue("recent_scores", [p for p in self._recent_score_paths() if p != path])
-            self._refresh_sidebar_recent()
+            self._forget_recent_score(path)
             return
         self._leave_practice()
         self.switch_to_practice(path)
@@ -463,6 +467,10 @@ class MainWindow(QMainWindow):
         paths = [resolved] + [p for p in self._recent_score_paths() if p != resolved]
         self._settings.setValue("recent_scores", paths[: self.RECENT_SCORE_LIMIT])
 
+    def _forget_recent_score(self, path: str) -> None:
+        self._settings.setValue("recent_scores", [p for p in self._recent_score_paths() if p != path])
+        self._refresh_sidebar_recent()
+
     def _refresh_sidebar_recent(self) -> None:
         scores = [(self._score_title(Path(p)), p) for p in self._recent_score_paths() if os.path.exists(p)]
         self.sidebar.set_recent(scores)
@@ -480,6 +488,15 @@ class MainWindow(QMainWindow):
                 pass
         return path.name.replace("_parsed.json", "").replace(".json", "")
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        layout = native_title_bar_layout(self, self.sidebar_toggle.size())
+        if layout is not None:
+            height, toggle_position = layout
+            self.title_bar.setFixedHeight(height)
+            self.sidebar.set_top_inset(height)
+            self.sidebar_toggle.move(toggle_position)
+
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "sidebar_toggle"):
@@ -495,7 +512,6 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(1)
 
     def switch_to_practice(self, json_path: str):
-        print(f"🔥🔥 [DEBUG] switch_to_practice 실제로 호출됨! 이동할 목표 Index: 2, 현재 파일: {__file__}")
         """선택한 악보 JSON을 로드하고 연습 화면(Index 2)으로 전환"""
         print(f"[switch_to_practice 진입] 경로: {json_path}")
         self.score_path = Path(json_path)
@@ -519,7 +535,6 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar_recent()
 
     def switch_to_admin(self, json_path: str = None):
-        print(f"🔥🔥 [DEBUG] switch_to_admin 실제로 호출됨! 이동할 목표 Index: 3, 현재 파일: {__file__}")
         """악보 정밀 에디터(Index 3)로 전환"""
         print(f"[switch_to_admin 진입] 경로: {json_path}")
         if json_path and os.path.exists(json_path):
@@ -1089,6 +1104,7 @@ class MainWindow(QMainWindow):
         step_id = getattr(self, "_recording_step_ids", {}).get(self.current_step().step)
         if getattr(self, "recorder", None) and step_id:
             self.recorder.record_attempt(score_step_id=step_id, outcome="skipped")
+
         if self.current_index >= len(self.practice_steps) - 1:
             self._complete_practice()
             return
@@ -1101,7 +1117,7 @@ class MainWindow(QMainWindow):
         was_running = self.practice_running
         mode = self.current_mode()
         self._cancel_pending_interactive_advance()
-        if mode == "interactive":
+        if mode == "interactive" and not was_running:
             self._stop_audio_worker()
         elif mode == "auto":
             self.auto_flow_timer.stop()
@@ -1245,6 +1261,7 @@ class MainWindow(QMainWindow):
 
         # 2. 기존 워커 스레드 정지
         self.stop_practice()
+        self.audio_controller.shutdown()
         self.stop_video()
 
         super().closeEvent(event)

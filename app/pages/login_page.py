@@ -1,7 +1,7 @@
 import hashlib
 import json
 import os
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -14,7 +14,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from app.api_client import api_client
-from app.google_auth import GoogleAuthConfigurationError, fetch_google_id_token
+from app.ui.dialogs import LoadingOverlay
+from app.config import USER_DATA_DIR
+from app.google_auth import (
+    GoogleAuthConfigurationError,
+    cancel_google_login,
+    fetch_google_id_token,
+    load_client_config,
+)
 
 
 
@@ -22,6 +29,16 @@ from app.google_auth import GoogleAuthConfigurationError, fetch_google_id_token
 def hash_password(password: str) -> str:
     """비밀번호 SHA-256 단방향 암호화 해시 함수"""
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+class GoogleLoginThread(QThread):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.token = None
+
+    def run(self):
+        self.token = fetch_google_id_token(self.config)
 
 
 class LoginPage(QWidget):
@@ -33,15 +50,19 @@ class LoginPage(QWidget):
         self.main_window = main_window
 
         # 로컬 유저 DB 파일 경로
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_dir))
-        self.db_dir = os.path.join(project_root, "data")
+        self.db_dir = str(USER_DATA_DIR)
         os.makedirs(self.db_dir, exist_ok=True)
         self.users_file = os.path.join(self.db_dir, "users.json")
         self._ensure_user_db()
 
         self.is_signup_mode = False  # False: 로그인 모드, True: 회원가입 모드
+        self.google_thread = None
+        self.google_overlay = None
+        self.google_cancelled = False
         self.init_ui()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._stop_google_login)
 
     def _ensure_user_db(self):
         """유저 파일이 없으면 기본 생성"""
@@ -290,6 +311,7 @@ class LoginPage(QWidget):
             self.btn_switch_mode.setText("회원가입")
 
     def handle_submit(self):
+        self._cancel_google_login()
         email = self.input_email.text().strip()
         pw = self.input_pw.text()
 
@@ -339,19 +361,53 @@ class LoginPage(QWidget):
 
     def handle_google_login(self):
         """실제 구글 OAuth 브라우저 로그인 수행"""
-        print("[로그인 시작] 브라우저를 열어 구글 계정 로그인을 진행합니다...")
+        thread = getattr(self, "google_thread", None)
+        if thread is not None and thread.isRunning():
+            return
 
-        # 1. 브라우저가 자동으로 열리고 사용자가 계정을 선택하여 신규 id_token 발급
         try:
-            google_id_token = fetch_google_id_token()
+            config = load_client_config()
         except GoogleAuthConfigurationError as error:
             QMessageBox.warning(self, "Google 로그인 설정 필요", str(error))
             return
 
+        print("[로그인 시작] 브라우저를 열어 구글 계정 로그인을 진행합니다...")
+        self.google_cancelled = False
+        self.google_overlay = LoadingOverlay(self, "Google 로그인 중")
+        self.google_overlay.rejected.connect(self._cancel_google_login)
+        self.google_overlay.show()
+        self.google_thread = GoogleLoginThread(config, self)
+        self.google_thread.finished.connect(self._finish_google_login)
+        self.google_thread.start()
+
+    def _cancel_google_login(self):
+        thread = getattr(self, "google_thread", None)
+        if thread is not None and thread.isRunning():
+            self.google_cancelled = True
+            cancel_google_login()
+
+    def _stop_google_login(self):
+        self._cancel_google_login()
+        if self.google_thread is not None:
+            self.google_thread.wait(3000)
+
+    def _finish_google_login(self):
+        thread = self.google_thread
+        self.google_thread = None
+        google_id_token = thread.token
+        thread.deleteLater()
+        if self.google_overlay is not None:
+            self.google_overlay.rejected.disconnect(self._cancel_google_login)
+            self.google_overlay.accept()
+            self.google_overlay.deleteLater()
+            self.google_overlay = None
+
+        if self.google_cancelled:
+            return
         if not google_id_token:
             QMessageBox.warning(
-                self, 
-                "로그인 취소", 
+                self,
+                "로그인 취소",
                 "구글 로그인이 완료되지 않았거나 취소되었습니다."
             )
             return
@@ -381,6 +437,7 @@ class LoginPage(QWidget):
 
     def handle_guest_login(self):
         """비로그인 게스트 바로 시작"""
+        self._cancel_google_login()
         guest_user = {"username": "게스트", "email": "guest@local"}
         self.login_success.emit(guest_user)
         if hasattr(self.main_window, "switch_to_select"):
