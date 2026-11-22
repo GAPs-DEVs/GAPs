@@ -417,25 +417,30 @@ uv run python -m tools.compare_frame_performance \
 
 ## 👥 팀
 
+<div align="center">
 <table>
 <tr>
-<td align="center" width="25%">
-<img src="https://github.com/JunhOpportunity.png" width="100" /><br />
+<td align="center" width="180">
+<a href="https://github.com/JunhOpportunity"><img src="https://github.com/JunhOpportunity.png?size=200" width="100" height="100" alt="김준호" /></a>
+<br /><br />
 <b>김준호</b><br />
 <sub>팀장</sub><br />
-<a href="https://github.com/JunhOpportunity">@JunhOpportunity</a>
+<sub><a href="https://github.com/JunhOpportunity">@JunhOpportunity</a></sub>
 </td>
-<td align="center" width="25%">
-<img src="https://github.com/wookgom.png" width="100" /><br />
+<td align="center" width="180">
+<a href="https://github.com/wookgom"><img src="https://github.com/wookgom.png?size=200" width="100" height="100" alt="권정욱" /></a>
+<br /><br />
 <b>권정욱</b><br />
 <sub>팀원</sub><br />
-<a href="https://github.com/wookgom">@wookgom</a>
+<sub><a href="https://github.com/wookgom">@wookgom</a></sub>
 </td>
-<td align="center" width="25%">
-<img src="https://github.com/junseok-jay.png" width="100" /><br />
+<td align="center" width="180">
+<a href="https://github.com/junseok-jay"><img src="https://github.com/junseok-jay.png?size=200" width="100" height="100" alt="전준석" /></a>
+<br /><br />
 <b>전준석</b><br />
 <sub>팀원</sub><br />
-<a href="https://github.com/junseok-jay">@junseok-jay</a> 
+<sub><a href="https://github.com/junseok-jay">@junseok-jay</a></sub>
 </td>
 </tr>
 </table>
+</div>
