@@ -1,75 +1,186 @@
-# Guitar Practice Support App
+<div align="center">
 
-기타 연습을 돕는 `PySide6` 데스크톱 앱입니다. 메인 실행 대상은 `app/main.py`이며, 웹캠 기반 지판 위치 표시, 마이크 기반 음정/화음 판정, 악보 선택/업로드, 악보 수정 에디터를 하나의 앱 흐름으로 제공합니다.
+<img src="assets/icon.png" width="128" alt="GAPs 아이콘" />
 
-기존의 지판 검출 디버그 뷰어는 개발 보조 도구로 남아 있으며, 이 리포지토리의 중심은 메인 사용자 앱인 `app`입니다.
+# GAPs
 
-## 주요 기능
+**카메라와 마이크로 기타 연습을 도와주는 데스크톱 앱**
 
-- 악보 선택 화면에서 `examples/*_parsed.json` 악보 목록 확인
-- GuitarPro `gp3/gp5` 파일 업로드 후 연습용 JSON 변환
-- 선택한 악보로 연습 화면 진입
-- 웹캠 영상 위에 현재 연습 step의 기타 줄/프렛 위치 표시
-- 지판 맞추기 기능으로 `nut`과 현재 보이는 기준 프렛을 선택해 AR 마커 위치 보정
-- 마이크 입력으로 단음/화음 판정
-- 정답을 연주하면 다음 step으로 넘어가는 인터랙티브 연습 모드
-- 악보의 `duration_ms` 기준으로 자동 진행되는 자동 흐름 모드
-- 악보 수정 에디터에서 step, string, fret 데이터 확인 및 수정
+웹캠으로 지판을 인식해 짚을 위치를 화면 위에 표시하고,<br />
+마이크로 연주한 음을 듣고 맞았는지 바로 알려줍니다.
 
-## 설치
+[![Release](https://img.shields.io/badge/release-v1.0.0-111827)](https://github.com/GAPs-DEVs/GAPs/releases/latest)
+![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-111827?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-111827?logo=windows&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.13-111827?logo=python&logoColor=white)
+![PySide6](https://img.shields.io/badge/Qt-PySide6-111827?logo=qt&logoColor=white)
 
-이 프로젝트는 `uv` 기준으로 의존성을 관리합니다.
+[**다운로드**](https://github.com/GAPs-DEVs/GAPs/releases/latest) · [주요 기능](#-주요-기능) · [설치](#-설치) · [사용 방법](#-사용-방법) · [작동 원리](#️-작동-원리) · [개발 가이드](#-개발-가이드)
 
-```bash
-uv sync --frozen
+</div>
+
+<br />
+
+## ✨ 주요 기능
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🎯 지판 위 AR 안내
+웹캠 영상 위에 지금 짚어야 할 **줄과 프렛 위치**를 표시합니다. 손이 지판을 가리거나 기타가 조금 움직여도 위치를 계속 따라갑니다.
+
+</td>
+<td width="50%" valign="top">
+
+### 🎤 소리로 정답 판정
+마이크로 연주를 듣고 **단음과 화음**이 맞았는지 판정합니다. 화음은 모든 음을 함께 쳐야 정답으로 인정합니다.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🎼 Guitar Pro 악보 등록
+`gp3` · `gp4` · `gp5` 악보를 등록하면 연습용 데이터로 자동 변환합니다.
+
+</td>
+<td valign="top">
+
+### ✏️ 악보 편집기
+변환된 악보의 줄·프렛을 확인하고, 음을 추가하거나 고치거나 지울 수 있습니다.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🔁 두 가지 연습 모드
+- **인터랙티브 모드**: 맞게 연주해야 다음 음으로 넘어갑니다.
+- **자동 흐름 모드**: 설정한 빠르기에 맞춰 악보가 자동으로 진행됩니다.
+
+</td>
+<td valign="top">
+
+### 📊 연습 기록과 리포트
+연습 결과를 서버에 저장하고, 음정 정확도와 자주 틀린 위치를 **웹 리포트**로 확인합니다.
+
+</td>
+</tr>
+</table>
+
+<br />
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/login.png" alt="로그인" /></td>
+<td width="50%"><img src="docs/images/library.png" alt="악보 보관함" /></td>
+</tr>
+<tr>
+<td align="center"><sub>로그인 — Google 계정 또는 로그인 없이 시작</sub></td>
+<td align="center"><sub>악보 보관함 — 등록한 악보를 바로 연습하거나 편집</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/practice.png" alt="연습 화면" /></td>
+<td><img src="docs/images/editor.png" alt="악보 편집기" /></td>
+</tr>
+<tr>
+<td align="center"><sub>연습 화면 — 지판을 인식해 프렛 위치를 화면에 표시</sub></td>
+<td align="center"><sub>악보 편집기 — 줄·프렛 데이터를 직접 수정</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/report.png" alt="연습 분석" /></td>
+<td><img src="docs/images/ai-report.png" alt="AI 리포트" /></td>
+</tr>
+<tr>
+<td align="center"><sub>연습 분석 — 정확도와 구간별 결과</sub></td>
+<td align="center"><sub>AI 리포트 — 반복 오류 위치와 다음 연습 계획</sub></td>
+</tr>
+</table>
+
+<br />
+
+## 📦 설치
+
+[**Releases**](https://github.com/GAPs-DEVs/GAPs/releases/latest) 페이지 맨 아래 **Assets**에서 내 운영체제에 맞는 파일을 받습니다.
+
+| 운영체제 | 파일 |
+|---|---|
+| macOS (Apple Silicon, M1 이상) | `GAPs-<버전>-macos-arm64.dmg` |
+| Windows 10 / 11 (64비트) | `GAPs-<버전>-windows-x64.zip` |
+
+<details>
+<summary><b>macOS 설치 방법</b></summary>
+
+1. dmg 파일을 열고, 창 안의 `GAPs`를 **Applications** 폴더로 끌어다 놓습니다.
+2. 처음 실행할 때 "손상되었기 때문에 열 수 없습니다" 또는 "확인되지 않은 개발자" 경고가 뜨면, 터미널에서 아래 명령을 실행한 뒤 다시 엽니다.
+   ```bash
+   xattr -cr /Applications/GAPs.app
+   ```
+3. 카메라와 마이크 권한을 묻는 창이 뜨면 **허용**을 누릅니다.
+
+> Intel Mac은 지원하지 않습니다.
+
+</details>
+
+<details>
+<summary><b>Windows 설치 방법</b></summary>
+
+1. zip 파일을 **전체 압축 풀기**로 풉니다. (zip 안에서 바로 실행하지 마세요.)
+2. 압축을 푼 `GAPs` 폴더 안의 `GAPs.exe`를 실행합니다. `GAPs.exe`만 따로 옮기면 실행되지 않으니 폴더째 옮겨주세요.
+3. "Windows의 PC 보호" 경고가 뜨면 **추가 정보 → 실행**을 누릅니다.
+
+</details>
+
+**준비물**: 웹캠, 마이크, 인터넷 연결 (로그인·악보 동기화)
+
+<br />
+
+## 🎸 사용 방법
+
+1. **로그인** — Google 계정으로 로그인하거나, 로그인 없이 시작합니다.
+2. **악보 등록** — 사이드바의 `새 악보 등록`에서 Guitar Pro 파일을 선택합니다.
+3. **연습 시작** — 악보 보관함에서 곡을 고르고 연습 화면으로 들어갑니다.
+4. **카메라·마이크 선택** — 사용할 장치를 고르고 `카메라 시작`을 누릅니다.
+5. **지판 맞추기** — 중간·끝 기준 프렛 번호를 입력하고, `지판 맞추기`에서 **너트 → 중간 프렛 → 끝 프렛**의 금속선을 차례로 클릭합니다.
+   - 선이 잘 검출되지 않으면 `양 끝점 직접 지정`을 켜고 각 선의 양 끝점을 총 여섯 번 클릭합니다.
+6. **연주** — 연습 모드를 고르고 `연습 시작`을 누른 뒤, 화면의 안내점을 따라 연주합니다.
+7. **기록 확인** — 사이드바의 `연습 기록`에서 웹 리포트를 엽니다.
+
+> 💡 지판을 맞출 때는 손을 잠깐 떼고 너트·프렛·줄이 선명하게 보이는 상태에서 선택하세요.
+
+<br />
+
+## ⚙️ 작동 원리
+
+```mermaid
+flowchart LR
+    subgraph 영상["📷 카메라"]
+        A[웹캠 영상] --> B["지판 검출<br/>(YOLO)"]
+        B --> C["지판 맞추기<br/>(너트·기준 프렛)"]
+        C --> D["지판 추적<br/>(Optical Flow · SIFT)"]
+        A --> E["손 인식<br/>(MediaPipe)"]
+        E --> D
+        D --> F[AR 안내점 표시]
+    end
+    subgraph 소리["🎤 마이크"]
+        G[오디오 입력] --> H["음 높이 분석<br/>(librosa)"]
+        H --> I[단음·화음 판정]
+    end
+    J[(악보 데이터)] --> F
+    J --> I
+    I --> K{정답?}
+    K -- 예 --> L[다음 음으로]
+    K -- 아니오 --> F
 ```
 
-Python 버전과 잠금된 의존성은 `pyproject.toml`, `uv.lock` 기준으로 관리합니다.
+- **지판 맞추기**: 처음 한 번 너트와 두 기준 프렛을 선택하면, 실제 프렛 간격 비율로 원근을 보정한 지판 모델을 만듭니다.
+- **지판 추적**: 이후에는 YOLO를 매 프레임 다시 돌리지 않고, 저장한 기준 영상과 현재 영상을 비교해 지판의 이동·회전·원근 변화를 계산합니다.
+- **손 가림 처리**: MediaPipe로 찾은 손 영역은 추적 계산에서 빼고, 손 아래에 있는 안내점도 계속 표시합니다.
+- **음 판정**: 기대하는 음의 주파수에 실제 스펙트럼 피크가 있는지, 배음이 아닌지, 다시 쳐서 소리가 커졌는지까지 확인합니다.
 
-## 실행
-
-Google 로그인을 사용하려면 프로젝트 루트의 `.env.example`을 `.env`로 복사하고
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`을 입력합니다. 앱은 로그인 버튼을 누를 때
-이 파일을 읽으며, 같은 이름의 환경변수가 있으면 환경변수를 우선 사용합니다.
-설정이 누락되면 로그인 화면에서 설정 안내를 표시합니다.
-패키징한 앱은 실행 파일 옆의 외부 `.env`를 읽습니다.
-실제 값이 있는 `.env`는 Git과 공유 압축 파일에서 제외하고 `.env.example`만 공유합니다.
-
-메인 앱 실행:
-
-```bash
-uv run python -m app.main
-```
-
-특정 카메라 인덱스로 실행:
-
-```bash
-uv run python -m app.main --camera 0
-```
-
-특정 악보 JSON으로 실행:
-
-```bash
-uv run python -m app.main --score-json examples/score_practice_sample.json
-```
-
-모델 또는 카메라 보정 파일을 직접 지정할 수도 있습니다.
-
-```bash
-uv run python -m app.main --model models/best06.pt --camera-calibration /absolute/path/to/camera_calibration.npz
-```
-
-## 기본 사용 흐름
-
-1. 앱을 실행하면 악보 선택 및 업로드 화면이 열립니다.
-2. 목록에서 악보를 선택하고 `선택한 악보로 연습 시작`을 누릅니다.
-3. 연습 화면에서 카메라와 마이크 입력 장치를 선택합니다.
-4. `카메라 시작` 후 비어 있는 중간·끝 기준 프렛 번호를 입력하고 `지판 맞추기`에서 너트 → 중간 프렛 → 끝 기준 프렛의 금속선을 선택합니다. 선이 잘 검출되지 않으면 `양 끝점 직접 지정`을 켜고 각 선의 양 끝점을 총 여섯 번 클릭합니다.
-5. 연습 모드를 고르고 `연습 시작`을 누릅니다.
-6. 인터랙티브 연습 모드는 정답 음을 감지하면 다음 step으로 이동합니다.
-7. 자동 흐름 모드는 사용자 연주 여부와 관계없이 악보의 시간 정보에 맞춰 진행합니다.
-
-## 지판 추적 방식
+<details>
+<summary><b>지판 추적 방식 자세히 보기</b></summary>
 
 메인 앱은 카메라를 켠 뒤 한 번 `지판 맞추기`를 해야 AR 안내점을 표시합니다.
 처음에는 손을 잠깐 떼고 지판의 너트·프렛·줄이 선명하게 보이는 영상을 기준으로 저장하세요.
@@ -106,13 +217,151 @@ uv run python -m app.main --model models/best06.pt --camera-calibration /absolut
 손 모델 초기화에 실패하면 `손 가림 감지 비활성`이 표시되며 영상 일치 검사로 계속 검증합니다.
 실제 연주 영상의 정확도와 카메라 FPS는 별도 확인이 필요합니다. 자동 테스트는 합성 픽셀 영상의 이동·기울기·가림·조명 변화·오검출·복구를 검증합니다.
 
-재탐색 성능과 AR 연속 표시를 같은 합성 영상으로 비교할 수 있습니다. 아래 명령은 기존 동기 검색과 메인 앱의 비동기 검색에 대해 구간별 처리 시간, AR 표시 프레임 수, 표시 중 끊김 횟수, 위치 오차, 화면 재진입 후 복구 시간을 출력합니다. 웹캠 입력·손 감지·Qt 화면 출력은 측정에 포함하지 않습니다.
+</details>
+
+<br />
+
+## 🛠 개발 가이드
+
+### 요구 사항
+
+- [uv](https://docs.astral.sh/uv/) (의존성 관리)
+- Python 3.13
+- macOS 개발 시 Xcode Command Line Tools (`xcode-select --install`)
+  - 개발 실행에서도 배포판과 같은 최신 macOS 창 디자인을 적용하는 데 사용합니다.
+
+### 설치와 실행
+
+```bash
+uv sync --frozen
+uv run python -m app.main
+```
+
+Google 로그인을 사용하려면 `.env.example`을 `.env`로 복사하고 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`을 입력합니다. 같은 이름의 환경변수가 있으면 환경변수를 우선 사용합니다. 실제 값이 들어간 `.env`는 Git에 올리지 않습니다.
+
+<details>
+<summary><b>실행 옵션</b></summary>
+
+```bash
+# 특정 카메라 인덱스로 실행
+uv run python -m app.main --camera 0
+
+# 특정 악보 JSON으로 실행
+uv run python -m app.main --score-json examples/score_practice_sample.json
+
+# 모델 또는 카메라 보정 파일 직접 지정
+uv run python -m app.main --model models/best06.pt --camera-calibration /absolute/path/to/camera_calibration.npz
+```
+
+카메라 보정 파일은 `npz` 형식이며 `camera_matrix`, `dist_coeffs`, `image_size` 키를 권장합니다.
+
+</details>
+
+### 테스트
+
+```bash
+uv run pytest
+```
+
+<details>
+<summary><b>부분 테스트</b></summary>
+
+```bash
+# 앱 관련 빠른 확인
+uv run pytest tests/test_practice_markers.py tests/test_score_steps.py tests/test_practice_audio_feature.py
+
+# 지판 추적 관련
+uv run pytest tests/test_fretboard_reference.py tests/test_reference_tracking.py tests/test_fretboard_motion.py tests/test_marker_visibility.py tests/test_tracking_occlusion.py tests/test_tracking_calibration_ui.py
+```
+
+</details>
+
+### 빌드와 배포
+
+GitHub Actions(`.github/workflows/release.yml`)가 macOS·Windows 빌드와 릴리스를 자동으로 처리합니다.
+
+```bash
+# 정식 배포: v로 시작하는 태그를 push하면 빌드 후 Release 생성
+git tag -a v1.0.1 -m "v1.0.1"
+git push origin v1.0.1
+
+# 테스트 빌드: Release 없이 빌드 결과물(Artifacts)만 생성
+gh workflow run release.yml --ref main
+```
+
+- `-`가 들어간 태그(`v1.0.1-rc.1` 등)는 Pre-release로 배포됩니다.
+- 로컬 빌드: `uv run pyinstaller GuitarPracticeApp.spec --noconfirm --clean`
+
+<details>
+<summary><b>프로젝트 구조</b></summary>
+
+```text
+app/
+  main.py                 # 메인 앱 실행 진입점, CLI 인자 처리
+  config.py               # 기본 경로와 앱 설정값
+  google_auth.py          # Google 로그인
+  api_client.py           # 서버 API 연동
+  practice_markers.py     # PracticeStep을 지판 위 AR 마커로 변환
+  practice_recorder.py    # 연습 기록 수집
+  pages/
+    login_page.py         # 로그인 화면
+    select_page.py        # 악보 보관함·등록 화면
+    admin_page.py         # 악보 편집기
+  features/
+    video.py              # 카메라, 지판 검출, AR 오버레이 워커
+    practice_audio.py     # 연습용 오디오 판정 컨트롤러
+    audio_devices.py      # 마이크 입력 장치 목록
+    score_library.py      # 악보 삭제 등 보관함 작업
+  ui/
+    main_window.py        # 메인 창과 화면 전환 조립
+    sidebar.py            # 사이드바
+    title_bar.py          # 타이틀바 (macOS·Windows)
+    dialogs.py            # 공용 팝업·로딩 오버레이
+    camera_panel.py       # 카메라 컨트롤
+    tracking_panel.py     # 지판 맞추기 컨트롤
+    practice_panel.py     # 연습/마이크/모드 컨트롤
+    video_surface.py      # 카메라 영상 표시 영역
+
+audio/                    # 음정/화음 감지 로직
+vision/                   # 지판 검출, 보정, 추적 로직
+practice/                 # 악보 step 데이터 모델과 변환 로직
+widgets/                  # 독립 실행/테스트용 위젯
+tools/                    # 개발용 디버그·성능 측정 도구
+examples/                 # 샘플 악보 JSON
+models/                   # YOLO/MediaPipe 모델 파일
+assets/                   # 앱 아이콘, DMG 배경
+tests/                    # 단위 테스트
+```
+
+</details>
+
+<details>
+<summary><b>악보 데이터 형식</b></summary>
+
+악보 JSON은 연습 step 단위의 배열이며, 주요 필드는 다음과 같습니다.
+
+| 필드 | 설명 |
+|---|---|
+| `step` | 연주 순서 |
+| `string` | 기타 줄 번호 |
+| `fret` | 프렛 번호 |
+| `duration_ms` | 자동 흐름 모드에서 해당 step을 유지할 시간 |
+| `midi_pitch` | MIDI 음고 |
+
+기본 악보는 `examples/score_practice_sample.json`입니다. Guitar Pro 파일을 등록하면 `*_parsed.json` 형태로 변환해 사용자 데이터 폴더에 저장합니다.
+
+</details>
+
+<details>
+<summary><b>성능 측정 도구</b></summary>
+
+재탐색 성능과 AR 연속 표시를 같은 합성 영상으로 비교합니다. 웹캠 입력·손 감지·Qt 화면 출력은 측정에 포함하지 않습니다.
 
 ```bash
 uv run python -m tools.benchmark_tracking_recovery
 ```
 
-실제 카메라 FPS와 AR 표시 유지 여부를 실시간으로 확인하려면 다음 도구를 사용하세요. 메인 앱의 카메라·지판 맞추기·비동기 재탐색 경로를 그대로 사용합니다.
+실제 카메라 FPS와 AR 표시 유지 여부를 실시간으로 확인합니다. 메인 앱의 카메라·지판 맞추기·비동기 재탐색 경로를 그대로 사용합니다.
 
 ```bash
 uv run python -m tools.frame_performance_viewer --camera 0
@@ -126,22 +375,16 @@ uv run python -m tools.frame_performance_viewer --camera 0
 
 실시간 수치는 최근 5초, 구간 비교와 저장 결과는 최근 10분을 기준으로 합니다. 지판을 선택하며 화면이 멈추는 구간과 `측정 일시정지` 구간은 끊김 통계에서 제외합니다. 창을 가리거나 최소화하면 화면 다시그리기 FPS가 낮아질 수 있으니 측정 중에는 영상 창을 보이게 두세요.
 
-화면 FPS는 새로운 영상이 Qt 다시그리기에 도달한 횟수이며 모니터의 물리적 주사율과는 다릅니다. 입력→화면 시간은 카메라 읽기 반환부터 계산하므로 카메라 내부 버퍼·노출 시간은 포함하지 않습니다. `입력 생략`은 최신 프레임만 처리하며 건너뛴 영상 수입니다. AR 표시율은 보정 범위 안의 연습 음이 있을 때 안내점이 표시된 프레임 비율이며, 위치 정확도는 화면을 보며 확인하세요. AR 미표시 시간에는 기타가 화면 밖에 있던 시간도 포함됩니다.
-
-`main`과 현재 개선 버전을 비교하려면 **현재 작업 폴더에서** 아래 명령을 하나씩 실행합니다. 첫 프로그램을 종료한 다음 다른 버전을 실행하세요.
+`main`과 현재 개선 버전을 비교하려면 **현재 작업 폴더에서** 아래 명령을 하나씩 실행합니다.
 
 ```bash
 uv run python -m tools.run_frame_performance --version main --camera 0
 uv run python -m tools.run_frame_performance --version current --camera 0
 ```
 
-첫 `main` 실행은 `artifacts/performance/main-worktree/`에 로컬 `main`의 detached worktree를 만들고, 시간 기록과 동일한 측정 화면만 추가합니다. 카메라 읽기·추적·재탐색 알고리즘은 각 버전 것을 사용합니다. 생성된 기준 커밋은 이후 실행에서도 유지되며 원격 저장소를 자동으로 가져오거나 `main`을 갱신하지 않습니다. UI 실행 없이 준비만 하려면 `--version main --prepare-only`를 사용하세요. 비교용 작업 폴더의 코드를 직접 수정하면 실행 준비가 변경을 감지하고 중단할 수 있습니다.
+첫 `main` 실행은 `artifacts/performance/main-worktree/`에 로컬 `main`의 detached worktree를 만들고, 시간 기록과 동일한 측정 화면만 추가합니다. UI 실행 없이 준비만 하려면 `--version main --prepare-only`를 사용하세요. 각 버전에서 같은 조명·카메라·창 크기·기준 프렛·연습 음을 유지하고 3회 이상 반복해 비교하세요.
 
-두 버전은 실행한 Python 환경과 현재 작업 폴더의 기본 모델·악보를 공유합니다. `--model`, `--score-json`, `--camera-calibration`으로 동일 파일을 지정할 수도 있습니다. `main`은 카메라를 처리 루프에서 동기적으로 읽으므로 독립적인 입력 FPS·입력 생략·백그라운드 재탐색 시간은 `—`로 표시합니다. 출력 FPS, 프레임 간격, 처리 시간, AR 표시율은 동일한 기준으로 측정합니다. 읽기 완료→화면 지연에는 카메라 내부 버퍼 시간이 빠져 있어 두 방식의 전체 지연을 직접 비교하는 값으로 사용하면 안 됩니다.
-
-각 버전에서 같은 조명·카메라·창 크기·기준 프렛·연습 음을 유지하고, 맞추기 전 10초 → 정상 추적 30초 → 손 가림·흔들기 20초 → 화면 밖으로 뺐다가 복귀 10초를 측정하세요. 카메라와 모델 초기 준비가 끝난 뒤 통계를 초기화하고 시작하는 편이 좋습니다. `main`과 `current`를 번갈아 각각 3회 이상 반복하고 정상 추적 FPS를 우선 비교하세요.
-
-`결과 저장`을 누르면 각각 `artifacts/performance/main/fps-.../`, `artifacts/performance/current/fps-.../`에 기록됩니다. 커밋, 수정 상태, Python 소스 해시(미커밋·새 파일 포함), 모델·악보 해시, 실제 영상 크기와 화면 크기도 저장합니다. 두 결과 폴더를 지정하면 비교표를 출력합니다.
+두 결과 폴더를 지정하면 비교표를 출력합니다.
 
 ```bash
 uv run python -m tools.compare_frame_performance \
@@ -150,74 +393,49 @@ uv run python -m tools.compare_frame_performance \
   --output artifacts/performance/comparison.md
 ```
 
-비교표는 구간별 FPS·FPS 변화율·프레임 간격 p95와 전체 AR 표시율 등을 보여줍니다. 모델이나 화면 크기 등이 다르면 조건 불일치를 표시합니다. 예전 결과도 읽을 수 있지만 당시 기록하지 않은 조건은 확인 불가로 표시합니다. 전체 FPS와 AR 사라짐 횟수는 구간 비중·측정 길이의 영향을 받으므로 테스트 동작과 시간도 함께 맞춰야 합니다.
+</details>
 
-```bash
-uv run pytest tests/test_fretboard_reference.py tests/test_reference_tracking.py tests/test_fretboard_motion.py tests/test_marker_visibility.py tests/test_tracking_occlusion.py tests/test_tracking_calibration_ui.py
-```
+### 개발 참고
 
-## 프로젝트 구조
-
-```text
-app/
-  main.py                 # 메인 앱 실행 진입점, CLI 인자 처리
-  config.py               # 기본 경로와 앱 설정값
-  practice_markers.py     # PracticeStep을 지판 위 AR 마커로 변환
-  pages/
-    select_page.py        # 악보 선택/업로드 화면
-    admin_page.py         # 악보 수정 에디터
-  features/
-    video.py              # 카메라, 지판 검출, AR 오버레이 워커
-    practice_audio.py     # 연습용 오디오 판정 컨트롤러
-    audio_devices.py      # 마이크 입력 장치 목록
-  ui/
-    main_window.py        # 메인 창과 화면 전환 조립
-    camera_panel.py       # 카메라 컨트롤
-    tracking_panel.py     # 지판 맞추기 컨트롤
-    practice_panel.py     # 연습/마이크/모드 컨트롤
-    video_surface.py      # 카메라 영상 표시 영역
-
-audio/                    # 음정/화음 감지 로직
-vision/                   # 지판 검출, 보정, 맵핑 로직
-practice/                 # 악보 step 데이터 모델과 변환 로직
-widgets/                  # 독립 실행/테스트용 위젯
-tools/                    # 개발용 디버그 도구
-examples/                 # 샘플 및 변환된 악보 JSON
-models/                   # YOLO/MediaPipe 모델 파일
-tests/                    # 단위 테스트
-```
-
-## 악보 데이터
-
-메인 앱은 기본적으로 `examples/score_practice_sample.json`을 사용합니다. 악보 JSON은 연습 step 단위의 배열이며, 주요 필드는 다음과 같습니다.
-
-- `step`: 연주 순서
-- `string`: 기타 줄 번호
-- `fret`: 프렛 번호
-- `duration_ms`: 자동 흐름 모드에서 해당 step을 유지할 시간
-- `midi_pitch`: 오디오 가이드나 후속 기능에서 사용할 MIDI 음고
-
-GuitarPro 업로드 기능은 변환된 파일을 `examples/*_parsed.json` 형태로 저장하고, 악보 선택 화면에서 다시 불러옵니다.
-
-## 테스트
-
-전체 테스트 실행:
-
-```bash
-uv run pytest
-```
-
-앱 관련 빠른 확인:
-
-```bash
-uv run pytest tests/test_practice_markers.py tests/test_score_steps.py tests/test_practice_audio_feature.py
-```
-
-## 개발 참고
-
-- 메인 앱 개발 규칙은 `app/DEVELOPMENT_GUIDE.md`를 따릅니다.
-- 사용자 앱의 실행 진입점은 `app/main.py`입니다.
-- 개발용 지판 검출 뷰어는 `tools/fretboard_detection_viewer.py`에 남아 있습니다.
-- macOS에서는 처음 실행할 때 카메라와 마이크 권한 허용이 필요할 수 있습니다.
+- 메인 앱 개발 규칙은 [`app/DEVELOPMENT_GUIDE.md`](app/DEVELOPMENT_GUIDE.md)를 따릅니다.
+- 개발용 지판 검출 뷰어는 `tools/fretboard_detection_viewer.py`에 있습니다.
 - 기본 YOLO 모델은 `models/best06.pt`를 사용합니다.
-- 카메라 보정 파일은 `npz` 형식이며 `camera_matrix`, `dist_coeffs`, `image_size` 키를 권장합니다.
+
+<br />
+
+## 🧰 기술 스택
+
+| 분야 | 사용 기술 |
+|---|---|
+| 앱 | ![PySide6](https://img.shields.io/badge/PySide6-41CD52?logo=qt&logoColor=white) ![Python](https://img.shields.io/badge/Python_3.13-3776AB?logo=python&logoColor=white) |
+| 비전 | ![YOLO](https://img.shields.io/badge/Ultralytics_YOLO-111F68?logo=yolo&logoColor=white) ![MediaPipe](https://img.shields.io/badge/MediaPipe-0097A7?logo=google&logoColor=white) ![OpenCV](https://img.shields.io/badge/OpenCV-5C3EE8?logo=opencv&logoColor=white) |
+| 오디오 | ![librosa](https://img.shields.io/badge/librosa-4D4D4D) ![sounddevice](https://img.shields.io/badge/sounddevice-4D4D4D) |
+| 악보 | ![PyGuitarPro](https://img.shields.io/badge/PyGuitarPro-4D4D4D) |
+| 빌드·배포 | ![uv](https://img.shields.io/badge/uv-DE5FE9?logo=uv&logoColor=white) ![PyInstaller](https://img.shields.io/badge/PyInstaller-4D4D4D) ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white) |
+
+<br />
+
+## 👥 팀
+
+<table>
+<tr>
+<td align="center" width="25%">
+<img src="https://github.com/JunhOpportunity.png" width="100" /><br />
+<b>김준호</b><br />
+<sub>팀장</sub><br />
+<a href="https://github.com/JunhOpportunity">@JunhOpportunity</a>
+</td>
+<td align="center" width="25%">
+<img src="https://github.com/wookgom.png" width="100" /><br />
+<b>권정욱</b><br />
+<sub>팀원</sub><br />
+<a href="https://github.com/wookgom">@wookgom</a>
+</td>
+<td align="center" width="25%">
+<img src="https://github.com/junseok-jay.png" width="100" /><br />
+<b>전준석</b><br />
+<sub>팀원</sub><br />
+<a href="https://github.com/junseok-jay">@junseok-jay</a> 
+</td>
+</tr>
+</table>
