@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.features.practice_audio import RetriggerGate, with_step_context
-from practice.score_steps import build_practice_steps, practice_step_carried_over_names
+from practice.score_steps import build_practice_steps
 
 
 class PracticeAudioFeatureTests(unittest.TestCase):
@@ -26,18 +26,6 @@ class PracticeAudioFeatureTests(unittest.TestCase):
 
         replay_result = gate.apply({"status": "correct", "is_correct": True})
         self.assertTrue(replay_result["is_correct"])
-
-    def test_carried_over_names_lists_only_pitches_from_previous_step(self) -> None:
-        steps = build_practice_steps(
-            [
-                {"step": 1, "string": 3, "fret": 0},
-                {"step": 2, "string": 3, "fret": 0},
-                {"step": 2, "string": 2, "fret": 0},
-            ]
-        )
-
-        self.assertEqual(practice_step_carried_over_names(steps[0], steps[1]), ("3번줄 0프렛",))
-        self.assertEqual(practice_step_carried_over_names(None, steps[1]), ())
 
     def test_with_step_context_adds_practice_metadata(self) -> None:
         step = build_practice_steps([{"step": 3, "string": 1, "fret": 5}])[0]

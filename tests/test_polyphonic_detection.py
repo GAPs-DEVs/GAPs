@@ -11,6 +11,7 @@ from audio.polyphonic_detection import (
     PolyphonicDetectionResult,
     PolyphonicNoteMatch,
     detect_expected_frequencies_cqt,
+    recent_tone_energy_db,
 )
 
 
@@ -31,6 +32,57 @@ def synthesize_notes(
                 amplitude = 0.12 / harmonic
                 samples += amplitude * np.sin(2.0 * np.pi * frequency * harmonic * time)
     return samples.astype(np.float32)
+
+
+def synthesize_steep_low_e(boosted_partial: int = 0, boost_db: float = 0.0) -> np.ndarray:
+    time = np.arange(int(44100 * 1.2)) / 44100
+    samples = np.zeros_like(time)
+    for partial in range(1, 13):
+        gain = 10 ** (boost_db / 20) if partial == boosted_partial else 1.0
+        samples += 0.25 / partial**2.5 * gain * np.sin(2.0 * np.pi * 82.41 * partial * time)
+    return samples
+
+
+def pluck(
+    frequency: float,
+    time: np.ndarray,
+    amplitude: float,
+    decay_db_per_s: float,
+    decay_step_db_per_s: float,
+    rolloff: float = 1.0,
+    partial_count: int = 12,
+) -> np.ndarray:
+    samples = np.zeros_like(time)
+    for partial in range(1, partial_count + 1):
+        decay = decay_db_per_s + decay_step_db_per_s * (partial - 1)
+        envelope = 10 ** (-decay * np.maximum(time, 0.0) / 20)
+        samples += amplitude / partial**rolloff * np.sin(2.0 * np.pi * frequency * partial * time) * envelope
+    return samples * (time >= 0)
+
+
+def judge_stream(
+    samples: np.ndarray,
+    expected: list[ExpectedFrequency],
+    sample_rate: int = 44100,
+    previous_audio: np.ndarray | None = None,
+) -> list[PolyphonicDetectionResult]:
+    baseline_db = None
+    if previous_audio is not None:
+        baseline_db = {
+            note.name: recent_tone_energy_db(previous_audio, sample_rate, note.frequency) for note in expected
+        }
+    gate = ChordJudgeGate(restrike_names=[note.name for note in expected], baseline_db=baseline_db)
+    window = int(sample_rate * 0.65)
+    interval = int(sample_rate * 0.12)
+    results = []
+    next_at = 0
+    for end in range(2048, samples.size + 1, 2048):
+        if end < 4096 or end < next_at:
+            continue
+        buffer = samples[max(0, end - window) : end].astype(np.float32)
+        results.append(gate.update(detect_expected_frequencies_cqt(buffer, sample_rate, expected)))
+        next_at = end + interval
+    return results
 
 
 class PolyphonicDetectionTests(unittest.TestCase):
@@ -96,7 +148,8 @@ class PolyphonicDetectionTests(unittest.TestCase):
             ExpectedFrequency("1번줄 7프렛", 493.89),
             ExpectedFrequency("6번줄 0프렛", 82.41),
         ]
-        samples = synthesize_notes([82.41, 493.89], harmonic_count=6)
+        samples = synthesize_notes([82.41], harmonic_count=6)
+        samples += 10 ** (-12 / 20) * synthesize_notes([493.89], harmonic_count=6)
 
         result = detect_expected_frequencies_cqt(samples, sample_rate=44100, expected_frequencies=expected)
 
@@ -162,7 +215,7 @@ class PolyphonicDetectionTests(unittest.TestCase):
         expected = [ExpectedFrequency("G3", 196.0), ExpectedFrequency("B3", 246.94)]
         time = np.arange(int(44100 * 1.2), dtype=np.float32) / 44100
         samples = 0.25 * np.sin(2.0 * np.pi * 246.94 * time)
-        samples += 0.25 * 10 ** (-26 / 20) * np.sin(2.0 * np.pi * 196.0 * time)
+        samples += 0.25 * 10 ** (-45 / 20) * np.sin(2.0 * np.pi * 196.0 * time)
 
         result = detect_expected_frequencies_cqt(
             samples.astype(np.float32), sample_rate=44100, expected_frequencies=expected
@@ -170,7 +223,89 @@ class PolyphonicDetectionTests(unittest.TestCase):
         matches = {match.name: match for match in result.matches}
 
         self.assertFalse(result.is_correct)
-        self.assertEqual(matches["G3"].rejection_reason, "too_weak_for_chord")
+        self.assertFalse(matches["G3"].is_present)
+
+    def test_accepts_quiet_note_that_stands_out_from_its_neighbourhood(self) -> None:
+        expected = [ExpectedFrequency("G3", 196.0), ExpectedFrequency("B3", 246.94)]
+        time = np.arange(int(44100 * 1.2), dtype=np.float32) / 44100
+        samples = 0.25 * np.sin(2.0 * np.pi * 246.94 * time)
+        samples += 0.25 * 10 ** (-26 / 20) * np.sin(2.0 * np.pi * 196.0 * time)
+
+        result = detect_expected_frequencies_cqt(
+            samples.astype(np.float32), sample_rate=44100, expected_frequencies=expected
+        )
+        matches = {match.name: match for match in result.matches}
+
+        self.assertTrue(result.is_correct)
+        self.assertTrue(matches["G3"].is_quiet)
+
+    def test_accepts_quiet_upper_string_well_above_lower_string_harmonic(self) -> None:
+        expected = [ExpectedFrequency("E5", 659.26), ExpectedFrequency("E2", 82.41)]
+        low = synthesize_steep_low_e()
+        time = np.arange(low.size) / 44100
+        samples = low + 0.25 * 10 ** (-30 / 20) * np.sin(2.0 * np.pi * 659.26 * time + np.pi / 2)
+
+        result = detect_expected_frequencies_cqt(samples.astype(np.float32), 44100, expected)
+        low_only = detect_expected_frequencies_cqt(low.astype(np.float32), 44100, expected)
+
+        self.assertTrue(result.is_correct)
+        self.assertTrue(result.matches[0].is_quiet)
+        self.assertFalse(low_only.is_correct)
+
+    def test_quiet_note_needs_clear_excess_over_lower_string_harmonic(self) -> None:
+        expected = [ExpectedFrequency("B4", 493.88), ExpectedFrequency("E2", 82.41)]
+        samples = synthesize_steep_low_e(boosted_partial=6, boost_db=8.0).astype(np.float32)
+
+        result = detect_expected_frequencies_cqt(samples, 44100, expected)
+        loose = detect_expected_frequencies_cqt(samples, 44100, expected, quiet_harmonic_excess_db=5.0)
+
+        self.assertFalse(result.is_correct)
+        self.assertEqual(result.matches[0].rejection_reason, "probable_harmonic_of:E2")
+        self.assertTrue(loose.is_correct)
+
+
+class ChordStreamTests(unittest.TestCase):
+    expected = [ExpectedFrequency("1번줄 7프렛", 493.88), ExpectedFrequency("6번줄 0프렛", 82.41)]
+
+    def test_ringing_open_string_does_not_complete_chord(self) -> None:
+        time = np.arange(int(44100 * 1.5)) / 44100
+        ringing = pluck(82.41, time + 0.6, 0.25, 6.0, 3.5)
+        struck = pluck(493.88, time - 0.4, 0.25, 12.0, 7.0, rolloff=1.4)
+
+        results = judge_stream(ringing + struck, self.expected)
+        reasons = {match.rejection_reason for result in results for match in result.matches[1:]}
+
+        self.assertFalse(any(result.is_correct for result in results))
+        self.assertIn("awaiting_restrike", reasons)
+
+    def test_chord_passes_when_both_strings_are_struck(self) -> None:
+        time = np.arange(int(44100 * 1.5)) / 44100
+        ringing = pluck(82.41, time + 0.6, 0.25, 6.0, 3.5)
+        struck = pluck(82.41, time - 0.4, 0.25, 6.0, 3.5) + pluck(493.88, time - 0.4, 0.04, 12.0, 7.0, rolloff=1.4)
+
+        results = judge_stream(ringing + struck, self.expected)
+
+        self.assertTrue(any(result.is_correct for result in results))
+
+    def test_open_string_resonating_with_upper_string_does_not_count(self) -> None:
+        time = np.arange(int(44100 * 1.5)) / 44100
+        struck = pluck(493.88, time - 0.4, 0.25, 12.0, 7.0, rolloff=1.4)
+        resonating = pluck(82.41, time - 0.4, 0.25 * 10 ** (-19 / 20), 6.0, 3.5, rolloff=2.0)
+
+        results = judge_stream(struck + resonating, self.expected)
+        reasons = {match.rejection_reason for result in results for match in result.matches[1:]}
+
+        self.assertFalse(any(result.is_correct for result in results))
+        self.assertIn("probable_sympathetic_of:1번줄 7프렛", reasons)
+
+    def test_note_ringing_before_step_switch_must_be_struck_again(self) -> None:
+        time = np.arange(int(44100 * 2.0)) / 44100 - 0.5
+        samples = pluck(82.41, time + 0.3, 0.25, 6.0, 3.5) + pluck(493.88, time - 0.3, 0.25, 12.0, 7.0, rolloff=1.4)
+        switch = int(44100 * 0.5)
+
+        results = judge_stream(samples[switch:], self.expected, previous_audio=samples[:switch])
+
+        self.assertFalse(any(result.is_correct for result in results))
 
 
 def make_detection(recent_energies_db: dict[str, float], status: str = "correct") -> PolyphonicDetectionResult:
@@ -232,6 +367,16 @@ class ChordJudgeGateTests(unittest.TestCase):
         replayed = gate.update(make_detection({"A": -30.0, "B": -20.0}))
 
         self.assertTrue(replayed.is_correct)
+
+    def test_seeded_baseline_requires_rise_from_level_before_start(self) -> None:
+        gate = ChordJudgeGate(restrike_names=["A", "B"], baseline_db={"A": -25.0, "B": -60.0}, confirm_frames=1)
+
+        result = gate.update(make_detection({"A": -26.0, "B": -20.0}))
+        matches = {match.name: match for match in result.matches}
+
+        self.assertFalse(result.is_correct)
+        self.assertEqual(matches["A"].rejection_reason, "awaiting_restrike")
+        self.assertTrue(matches["B"].is_present)
 
     def test_notes_not_carried_over_pass_without_onset(self) -> None:
         gate = ChordJudgeGate(restrike_names=[], confirm_frames=1)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Mapping
 from queue import Empty, Full, Queue
 from threading import Lock
 from time import perf_counter
@@ -13,10 +13,11 @@ from audio.polyphonic_detection import (
     ChordJudgeGate,
     ExpectedFrequency,
     detect_expected_frequencies_cqt,
+    recent_tone_energy_db,
 )
 
 
-RESTRIKE_MESSAGE = "이전 스텝에서 울리던 음은 다시 쳐야 인정됩니다."
+RESTRIKE_MESSAGE = "이미 울리고 있던 음은 다시 쳐야 인정됩니다."
 
 
 class ChordAudioWorker(QThread):
@@ -34,7 +35,6 @@ class ChordAudioWorker(QThread):
         update_interval_ms: int = 120,
         result_hold_ms: int = 600,
         device: int | str | None = None,
-        restrike_names: Iterable[str] = (),
         onset_rise_db: float = 3.0,
         confirm_frames: int = 2,
         target_id: int = 0,
@@ -60,10 +60,10 @@ class ChordAudioWorker(QThread):
         self.target_id = target_id
         self.onset_rise_db = onset_rise_db
         self.confirm_frames = confirm_frames
-        self._judge_gate = self._new_judge_gate(restrike_names)
+        self._judge_gate = self._new_judge_gate()
         self._running = True
         self._target_lock = Lock()
-        self._pending_target: tuple[list[ExpectedFrequency], tuple[str, ...], int] | None = None
+        self._pending_target: tuple[list[ExpectedFrequency], int] | None = None
 
     def request_stop(self) -> None:
         self._running = False
@@ -78,28 +78,34 @@ class ChordAudioWorker(QThread):
         self,
         expected_frequencies: list[ExpectedFrequency],
         target_id: int,
-        restrike_names: Iterable[str] = (),
     ) -> None:
         if not expected_frequencies:
             raise ValueError("expected_frequencies must not be empty.")
         with self._target_lock:
-            self._pending_target = (list(expected_frequencies), tuple(restrike_names), target_id)
+            self._pending_target = (list(expected_frequencies), target_id)
 
-    def _new_judge_gate(self, restrike_names: Iterable[str]) -> ChordJudgeGate:
+    def _new_judge_gate(self, baseline_db: Mapping[str, float] | None = None) -> ChordJudgeGate:
         return ChordJudgeGate(
-            restrike_names=restrike_names,
+            restrike_names=[expected.name for expected in self.expected_frequencies],
             onset_rise_db=self.onset_rise_db,
             confirm_frames=self.confirm_frames,
+            baseline_db=baseline_db,
         )
 
-    def _apply_pending_target(self) -> bool:
+    def _apply_pending_target(self, audio_buffer: np.ndarray | None = None, sample_rate: int = 0) -> bool:
         with self._target_lock:
             pending = self._pending_target
             self._pending_target = None
         if pending is None:
             return False
-        self.expected_frequencies, restrike_names, self.target_id = pending
-        self._judge_gate = self._new_judge_gate(restrike_names)
+        self.expected_frequencies, self.target_id = pending
+        baseline_db = None
+        if audio_buffer is not None and audio_buffer.size > 0:
+            baseline_db = {
+                expected.name: recent_tone_energy_db(audio_buffer, sample_rate, expected.frequency)
+                for expected in self.expected_frequencies
+            }
+        self._judge_gate = self._new_judge_gate(baseline_db)
         return True
 
     def run(self) -> None:
@@ -140,7 +146,7 @@ class ChordAudioWorker(QThread):
                 window_samples = max(1, int(sample_rate * self.analysis_window_ms / 1000.0))
                 next_emit_at = 0.0
                 while self._running and not self.isInterruptionRequested():
-                    if self._apply_pending_target():
+                    if self._apply_pending_target(audio_buffer, sample_rate):
                         _drain(audio_blocks)
                         audio_buffer = np.asarray([], dtype=np.float32)
                         last_correct_result = None

@@ -98,21 +98,6 @@ def practice_steps_have_same_expected_frequencies(
     return practice_step_frequency_signature(left) == practice_step_frequency_signature(right)
 
 
-def practice_step_carried_over_names(
-    previous: PracticeStep | None,
-    current: PracticeStep,
-) -> tuple[str, ...]:
-    """Names of current-step notes whose pitch was also expected in the previous step."""
-    if previous is None:
-        return ()
-    previous_frequencies = set(practice_step_frequency_signature(previous))
-    return tuple(
-        expected.name
-        for expected in current.expected_frequencies
-        if round(expected.frequency, 2) in previous_frequencies
-    )
-
-
 def _extract_note_list(data: object) -> list[object]:
     if isinstance(data, list):
         return data
