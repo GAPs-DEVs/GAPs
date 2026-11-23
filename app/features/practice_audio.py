@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
 
-from audio.audio_worker import AudioWorker
+from audio.audio_worker import AudioWorker, SharedAudioInput
 from audio.chord_audio_worker import ChordAudioWorker
 from practice.score_steps import PracticeStep, practice_steps_have_same_expected_frequencies
 
@@ -17,6 +17,7 @@ class PracticeAudioController(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.worker: PracticeAudioWorker | None = None
+        self._audio_input: SharedAudioInput | None = None
         self._target_id = 0
         self._retired_workers: list[PracticeAudioWorker] = []
 
@@ -33,13 +34,15 @@ class PracticeAudioController(QObject):
                 self.worker.set_target(list(step.expected_frequencies), self._target_id)
             return
 
-        self.stop()
+        self._retire_worker()
+        audio_input = self._ensure_audio_input(device)
         if step.mode == "single":
             expected = step.expected_frequencies[0]
             self.worker = AudioWorker(
                 expected_frequency=expected.frequency,
                 device=device,
                 target_id=self._target_id,
+                audio_input=audio_input,
                 parent=self,
             )
         else:
@@ -47,6 +50,7 @@ class PracticeAudioController(QObject):
                 expected_frequencies=list(step.expected_frequencies),
                 device=device,
                 target_id=self._target_id,
+                audio_input=audio_input,
                 parent=self,
             )
 
@@ -60,7 +64,25 @@ class PracticeAudioController(QObject):
             return False
         return isinstance(worker, AudioWorker) == (step.mode == "single")
 
+    def _ensure_audio_input(self, device: int | str | None) -> SharedAudioInput:
+        audio_input = self._audio_input
+        if audio_input is not None and audio_input.device == device and audio_input.is_alive():
+            return audio_input
+        self._close_audio_input()
+        self._audio_input = SharedAudioInput(device)
+        self._audio_input.start()
+        return self._audio_input
+
+    def _close_audio_input(self) -> None:
+        if self._audio_input is not None:
+            self._audio_input.close()
+            self._audio_input = None
+
     def stop(self) -> None:
+        self._retire_worker()
+        self._close_audio_input()
+
+    def _retire_worker(self) -> None:
         if self.worker is None:
             return
         worker = self.worker
@@ -77,11 +99,14 @@ class PracticeAudioController(QObject):
             self._release_worker(worker)
 
     def shutdown(self, timeout_ms: int = 3000) -> None:
+        audio_input = self._audio_input
         self.stop()
         for worker in list(self._retired_workers):
             worker.wait(timeout_ms)
             if not worker.isRunning():
                 self._release_worker(worker)
+        if audio_input is not None:
+            audio_input.join(timeout_ms / 1000.0)
 
     def _release_finished_worker(self) -> None:
         self._release_worker(self.sender())

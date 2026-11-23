@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from queue import Empty, Full, Queue
+from queue import Empty, Queue
 from threading import Lock
 from time import perf_counter
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
-from audio.audio_worker import open_input_stream
+from audio.audio_worker import SharedAudioInput, input_blocks
 from audio.polyphonic_detection import (
     ChordJudgeGate,
     ExpectedFrequency,
@@ -38,6 +38,7 @@ class ChordAudioWorker(QThread):
         onset_rise_db: float = 3.0,
         confirm_frames: int = 2,
         target_id: int = 0,
+        audio_input: SharedAudioInput | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -57,6 +58,7 @@ class ChordAudioWorker(QThread):
         self.update_interval_ms = update_interval_ms
         self.result_hold_ms = result_hold_ms
         self.device = device
+        self.audio_input = audio_input
         self.target_id = target_id
         self.onset_rise_db = onset_rise_db
         self.confirm_frames = confirm_frames
@@ -109,30 +111,8 @@ class ChordAudioWorker(QThread):
         return True
 
     def run(self) -> None:
-        try:
-            import sounddevice as sd
-        except Exception as exc:  # pragma: no cover - depends on local environment
-            self._emit_error_result(f"sounddevice import failed: {exc}")
-            return
         if not self._running:
             return
-
-        audio_blocks: Queue[np.ndarray] = Queue(maxsize=8)
-        stream_status_message = ""
-
-        def audio_callback(indata, _frames, _time_info, status) -> None:
-            nonlocal stream_status_message
-            if status:
-                stream_status_message = str(status)
-            block = np.asarray(indata[:, 0], dtype=np.float32).copy()
-            try:
-                audio_blocks.put_nowait(block)
-            except Full:
-                try:
-                    audio_blocks.get_nowait()
-                except Empty:
-                    pass
-                audio_blocks.put_nowait(block)
 
         self._apply_pending_target()
         self._emit(self._idle_result("listening"))
@@ -141,8 +121,8 @@ class ChordAudioWorker(QThread):
         last_correct_at = 0.0
 
         try:
-            with open_input_stream(sd, self.device, self.sample_rate, self.block_size, audio_callback) as stream:
-                sample_rate = int(stream.samplerate)
+            with input_blocks(self.audio_input, self.device, maxsize=8) as (audio_input, audio_blocks):
+                sample_rate = audio_input.sample_rate
                 window_samples = max(1, int(sample_rate * self.analysis_window_ms / 1000.0))
                 next_emit_at = 0.0
                 while self._running and not self.isInterruptionRequested():
@@ -175,7 +155,7 @@ class ChordAudioWorker(QThread):
                         silence_threshold=self.silence_threshold,
                     )
                     detection = self._judge_gate.update(detection)
-                    result = self._build_result(detection, stream_status_message)
+                    result = self._build_result(detection, audio_input.status_message)
                     if detection.is_correct:
                         last_correct_result = result
                         last_correct_at = now
@@ -187,7 +167,7 @@ class ChordAudioWorker(QThread):
                         held_result = dict(last_correct_result)
                         held_result["held"] = True
                         held_result["held_ms"] = int((now - last_correct_at) * 1000.0)
-                        held_result["stream_status"] = stream_status_message
+                        held_result["stream_status"] = audio_input.status_message
                         self._emit(held_result)
                     else:
                         self._emit(result)

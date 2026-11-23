@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from contextlib import contextmanager
 from queue import Empty, Full, Queue
-from threading import Lock
+from threading import Event, Lock, Thread
 from time import perf_counter
 
 import numpy as np
@@ -170,6 +170,97 @@ def open_input_stream(sd, device, sample_rate, block_size, callback):
                 stream.close()
 
 
+class SharedAudioInput:
+    def __init__(self, device: int | str | None = None, sample_rate: int = 44100, block_size: int = 2048) -> None:
+        self.device = device
+        self.sample_rate = sample_rate
+        self.block_size = block_size
+        self.status_message = ""
+        self.error: Exception | None = None
+        self._sinks: list[Queue] = []
+        self._sinks_lock = Lock()
+        self._ready = Event()
+        self._closing = Event()
+        self._thread = Thread(target=self._run, name="audio-input", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def close(self) -> None:
+        self._closing.set()
+
+    def join(self, timeout: float) -> None:
+        if self._thread.is_alive():
+            self._thread.join(timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive() and not self._closing.is_set()
+
+    def wait_ready(self, timeout: float) -> bool:
+        return self._ready.wait(timeout) and self.error is None and self._thread.is_alive()
+
+    @contextmanager
+    def subscribe(self, maxsize: int):
+        blocks: Queue[np.ndarray] = Queue(maxsize=maxsize)
+        with self._sinks_lock:
+            self._sinks.append(blocks)
+        try:
+            yield blocks
+        finally:
+            with self._sinks_lock:
+                self._sinks.remove(blocks)
+
+    def _callback(self, indata, _frames, _time_info, status) -> None:
+        if status:
+            self.status_message = str(status)
+        with self._sinks_lock:
+            sinks = list(self._sinks)
+        if not sinks:
+            return
+        block = np.asarray(indata[:, 0], dtype=np.float32).copy()
+        for blocks in sinks:
+            try:
+                blocks.put_nowait(block)
+            except Full:
+                try:
+                    blocks.get_nowait()
+                except Empty:
+                    pass
+                try:
+                    blocks.put_nowait(block)
+                except Full:
+                    pass
+
+    def _run(self) -> None:
+        try:
+            import sounddevice as sd
+
+            with open_input_stream(sd, self.device, self.sample_rate, self.block_size, self._callback) as stream:
+                self.sample_rate = int(stream.samplerate)
+                self._ready.set()
+                self._closing.wait()
+        except Exception as exc:  # pragma: no cover - hardware and permission dependent
+            self.error = exc
+        finally:
+            self._ready.set()
+
+
+@contextmanager
+def input_blocks(audio_input: SharedAudioInput | None, device, maxsize: int, timeout: float = 5.0):
+    owned = audio_input is None
+    if owned:
+        audio_input = SharedAudioInput(device)
+        audio_input.start()
+    try:
+        if not audio_input.wait_ready(timeout):
+            raise RuntimeError(str(audio_input.error or "audio input did not start"))
+        with audio_input.subscribe(maxsize) as blocks:
+            yield audio_input, blocks
+    finally:
+        if owned:
+            audio_input.close()
+
+
 class AudioWorker(QThread):
     result_ready = Signal(dict)
     error_message = Signal(str)
@@ -188,6 +279,7 @@ class AudioWorker(QThread):
         pitch_backend: str = "librosa_yin",
         device: int | str | None = None,
         target_id: int = 0,
+        audio_input: SharedAudioInput | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -210,6 +302,7 @@ class AudioWorker(QThread):
         self.pitch_backend = pitch_backend
         self.device = device
         self.target_id = target_id
+        self.audio_input = audio_input
         self._running = True
         self._target_lock = Lock()
         self._pending_target: tuple[float, int] | None = None
@@ -239,30 +332,8 @@ class AudioWorker(QThread):
         return True
 
     def run(self) -> None:
-        try:
-            import sounddevice as sd
-        except Exception as exc:  # pragma: no cover - depends on local environment
-            self._emit_error_result(f"sounddevice import failed: {exc}")
-            return
         if not self._running:
             return
-
-        audio_blocks: Queue[np.ndarray] = Queue(maxsize=3)
-        stream_status_message = ""
-
-        def audio_callback(indata, _frames, _time_info, status) -> None:
-            nonlocal stream_status_message
-            if status:
-                stream_status_message = str(status)
-            block = np.asarray(indata[:, 0], dtype=np.float32).copy()
-            try:
-                audio_blocks.put_nowait(block)
-            except Full:
-                try:
-                    audio_blocks.get_nowait()
-                except Empty:
-                    pass
-                audio_blocks.put_nowait(block)
 
         self._apply_pending_target()
         self._emit(self._build_result(status="listening"))
@@ -270,19 +341,25 @@ class AudioWorker(QThread):
         last_voiced_at = 0.0
 
         try:
-            with open_input_stream(sd, self.device, self.sample_rate, self.block_size, audio_callback) as stream:
-                sample_rate = int(stream.samplerate)
+            with input_blocks(self.audio_input, self.device, maxsize=6) as (audio_input, audio_blocks):
+                sample_rate = audio_input.sample_rate
+                block = np.asarray([], dtype=np.float32)
                 next_emit_at = 0.0
                 while self._running and not self.isInterruptionRequested():
                     if self._apply_pending_target():
                         _drain(audio_blocks)
+                        block = np.asarray([], dtype=np.float32)
                         last_voiced_result = None
                         next_emit_at = 0.0
                         self._emit(self._build_result(status="listening"))
                     try:
-                        block = audio_blocks.get(timeout=0.1)
+                        incoming = audio_blocks.get(timeout=0.1)
                     except Empty:
                         continue
+                    block = np.concatenate((block, incoming))[-self.block_size :]
+                    if block.size < self.block_size:
+                        continue
+                    stream_status_message = audio_input.status_message
 
                     now = perf_counter()
                     if now < next_emit_at:
